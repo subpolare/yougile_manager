@@ -7,7 +7,7 @@ import math
 import time
 from collections import deque
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -46,6 +46,8 @@ class YouGileUser:
 class YouGileBoard:
     id: str
     project_id: str
+    title: str = ""
+    display_order: int = 0
     deleted: bool = False
 
 
@@ -53,6 +55,8 @@ class YouGileBoard:
 class YouGileColumn:
     id: str
     board_id: str
+    title: str = ""
+    display_order: int = 0
     deleted: bool = False
 
 
@@ -66,6 +70,10 @@ class YouGileTask:
     completed: bool = False
     archived: bool = False
     deleted: bool = False
+    board_id: str | None = None
+    column_title: str | None = None
+    board_order: int | None = None
+    column_order: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,17 +84,34 @@ class WorkspaceSnapshot:
     users: tuple[YouGileUser, ...]
 
     def tasks_for_project(self, project_id: str) -> tuple[YouGileTask, ...]:
-        board_ids = {
-            board.id
+        boards_by_id = {
+            board.id: board
             for board in self.boards
             if board.project_id == project_id and not board.deleted
         }
-        column_ids = {
-            column.id
+        columns_by_id = {
+            column.id: column
             for column in self.columns
-            if column.board_id in board_ids and not column.deleted
+            if column.board_id in boards_by_id and not column.deleted
         }
-        return tuple(task for task in self.tasks if task.column_id in column_ids)
+        result: list[YouGileTask] = []
+        for task in self.tasks:
+            if task.column_id is None:
+                continue
+            column = columns_by_id.get(task.column_id)
+            if column is None:
+                continue
+            board = boards_by_id[column.board_id]
+            result.append(
+                replace(
+                    task,
+                    board_id=board.id,
+                    column_title=column.title,
+                    board_order=board.display_order,
+                    column_order=column.display_order,
+                )
+            )
+        return tuple(result)
 
 
 class AsyncWindowRateLimiter:
@@ -235,8 +260,10 @@ class YouGileClient:
             self._paginate("/users"),
         )
         return WorkspaceSnapshot(
-            boards=tuple(_parse_board(row) for row in boards_rows),
-            columns=tuple(_parse_column(row) for row in columns_rows),
+            # REST API v2 exposes no separate board/column position property. Its
+            # ordered, paginated content sequence is therefore retained verbatim.
+            boards=_parse_boards_in_api_order(boards_rows),
+            columns=_parse_columns_in_api_order(columns_rows),
             tasks=tuple(_parse_task(row) for row in tasks_rows),
             users=tuple(_parse_user(row) for row in users_rows),
         )
@@ -297,20 +324,50 @@ def _parse_user(row: Mapping[str, Any]) -> YouGileUser:
     )
 
 
-def _parse_board(row: Mapping[str, Any]) -> YouGileBoard:
+def _parse_board(row: Mapping[str, Any], *, display_order: int = 0) -> YouGileBoard:
     return YouGileBoard(
         id=_required_string(row, "id", "board"),
         project_id=_required_string(row, "projectId", "board"),
+        title=_required_string(row, "title", "board"),
+        display_order=display_order,
         deleted=_optional_bool(row, "deleted"),
     )
 
 
-def _parse_column(row: Mapping[str, Any]) -> YouGileColumn:
+def _parse_column(row: Mapping[str, Any], *, display_order: int = 0) -> YouGileColumn:
     return YouGileColumn(
         id=_required_string(row, "id", "column"),
         board_id=_required_string(row, "boardId", "column"),
+        title=_required_string(row, "title", "column"),
+        display_order=display_order,
         deleted=_optional_bool(row, "deleted"),
     )
+
+
+def _parse_boards_in_api_order(
+    rows: list[Mapping[str, Any]],
+) -> tuple[YouGileBoard, ...]:
+    positions_by_project: dict[str, int] = {}
+    boards: list[YouGileBoard] = []
+    for row in rows:
+        board = _parse_board(row)
+        position = positions_by_project.get(board.project_id, 0)
+        boards.append(replace(board, display_order=position))
+        positions_by_project[board.project_id] = position + 1
+    return tuple(boards)
+
+
+def _parse_columns_in_api_order(
+    rows: list[Mapping[str, Any]],
+) -> tuple[YouGileColumn, ...]:
+    positions_by_board: dict[str, int] = {}
+    columns: list[YouGileColumn] = []
+    for row in rows:
+        column = _parse_column(row)
+        position = positions_by_board.get(column.board_id, 0)
+        columns.append(replace(column, display_order=position))
+        positions_by_board[column.board_id] = position + 1
+    return tuple(columns)
 
 
 def _parse_task(row: Mapping[str, Any]) -> YouGileTask:

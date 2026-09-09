@@ -4,9 +4,10 @@ import html
 import random
 import re
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 
 from app.greetings import DUMB_GREETINGS
-from app.task_service import TaskBuckets
+from app.task_service import MOSCOW_TZ, TaskBuckets, deadline_datetime
 from app.yougile import YouGileTask
 
 
@@ -14,6 +15,29 @@ TELEGRAM_MESSAGE_LIMIT = 4096
 NO_TASKS = "На сегодня и до конца недели задач с дедлайнами нет 🎉"
 NO_ASSIGNEES = "вы забыли написать, кто за это отвечает"
 _B_TAG_RE = re.compile(r"</?b>")
+RUSSIAN_WEEKDAYS = (
+    "понедельник",
+    "вторник",
+    "среда",
+    "четверг",
+    "пятница",
+    "суббота",
+    "воскресенье",
+)
+RUSSIAN_MONTHS = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,13 +45,23 @@ class _TaskLine:
     number: int
     task: YouGileTask
     assignees: str | None
+    deadline_annotation: str | None = None
+
+    def subject(self, title: str | None = None) -> str:
+        if not self.task.column_title:
+            raise ValueError(f"Task {self.task.id!r} has no YouGile column title")
+        rendered_title = self.task.title if title is None else title
+        subject = f"{self.task.column_title}. {rendered_title}"
+        if self.deadline_annotation:
+            subject = f"{subject} {self.deadline_annotation}"
+        return subject
 
     def plain(self, title: str | None = None, assignees: str | None = None) -> str:
-        rendered_title = self.task.title if title is None else title
+        subject = self.subject(title)
         if self.assignees is None:
-            return f"{self.number}. {rendered_title} — {NO_ASSIGNEES}"
+            return f"{self.number}. {subject} — {NO_ASSIGNEES}"
         rendered_assignees = self.assignees if assignees is None else assignees
-        return f"{self.number}. {rendered_title}: {rendered_assignees}"
+        return f"{self.number}. {subject}: {rendered_assignees}"
 
     def render(self, max_visible_units: int = TELEGRAM_MESSAGE_LIMIT) -> str:
         original = self.plain()
@@ -50,7 +84,9 @@ class _TaskLine:
             return html.escape(best)
 
         # Extremely large assignee data is also bounded so Telegram never rejects the request.
-        prefix = f"{self.number}. …"
+        prefix = f"{self.number}. {self.task.column_title}. …"
+        if self.deadline_annotation:
+            prefix = f"{prefix} {self.deadline_annotation}"
         if self.assignees is None:
             return html.escape(_truncate_utf16(self.plain(title="…"), max_visible_units))
         separator = ": "
@@ -89,6 +125,36 @@ def format_task_count(count: int) -> str:
     return f"{count} {word}"
 
 
+def russian_weekday(value: date) -> str:
+    return RUSSIAN_WEEKDAYS[value.weekday()]
+
+
+def russian_month(month: int) -> str:
+    if isinstance(month, bool) or not isinstance(month, int):
+        raise TypeError("month must be an integer")
+    if not 1 <= month <= 12:
+        raise ValueError("month must be between 1 and 12")
+    return RUSSIAN_MONTHS[month - 1]
+
+
+def format_future_deadline(deadline: date, today: date) -> str:
+    formatted = deadline.strftime("%d.%m")
+    if deadline == today + timedelta(days=1):
+        return f"(до завтра, {formatted})"
+    if deadline == today + timedelta(days=2):
+        return f"(до послезавтра, {formatted})"
+    return f"(до {formatted})"
+
+
+def format_overdue_deadline(deadline: date, today: date) -> str:
+    formatted = deadline.strftime("%d.%m")
+    if deadline == today - timedelta(days=1):
+        return f"(дедлайн вчера, {formatted})"
+    if deadline == today - timedelta(days=2):
+        return f"(дедлайн позавчера, {formatted})"
+    return f"(дедлайн {formatted})"
+
+
 def format_assignees(
     assignee_ids: tuple[str, ...] | list[str],
     telegram_by_user_id: dict[str, str],
@@ -118,10 +184,17 @@ def format_digest(
     telegram_by_user_id: dict[str, str],
     display_name_by_user_id: dict[str, str],
     *,
+    today: date | None = None,
     max_length: int = TELEGRAM_MESSAGE_LIMIT,
 ) -> list[str]:
+    moscow_today = today or datetime.now(MOSCOW_TZ).date()
     intro = f"☀️ {html.escape(random.choice(DUMB_GREETINGS))}, коллеги!"
-    sections = _build_sections(buckets, telegram_by_user_id, display_name_by_user_id)
+    sections = _build_sections(
+        buckets,
+        telegram_by_user_id,
+        display_name_by_user_id,
+        moscow_today,
+    )
     if not sections:
         return [f"{intro}\n\n{NO_TASKS}"]
 
@@ -160,25 +233,30 @@ def _build_sections(
     buckets: TaskBuckets,
     telegram_by_user_id: dict[str, str],
     display_name_by_user_id: dict[str, str],
+    today: date,
 ) -> list[_Section]:
     specifications = (
         (
             buckets.today,
-            f"Сегодня вам надо закрыть {format_task_count(len(buckets.today))}:",
+            f"Сегодня {russian_weekday(today)}, {today.day} {russian_month(today.month)}, "
+            f"и вам надо закрыть {format_task_count(len(buckets.today))}:",
+            None,
         ),
         (
             buckets.week,
             "Помимо этого, до конца недели есть еще "
             f"{format_task_count(len(buckets.week))}:",
+            format_future_deadline,
         ),
         (
             buckets.overdue,
             f"А еще вы просрочили {format_task_count(len(buckets.overdue))}! "
             "Буду тегать вас, пока не исправитесь:",
+            format_overdue_deadline,
         ),
     )
     sections: list[_Section] = []
-    for tasks, heading in specifications:
+    for tasks, heading, deadline_formatter in specifications:
         if not tasks:
             continue
         lines = tuple(
@@ -187,6 +265,11 @@ def _build_sections(
                 task=task,
                 assignees=format_assignees(
                     task.assigned, telegram_by_user_id, display_name_by_user_id
+                ),
+                deadline_annotation=(
+                    deadline_formatter(deadline_datetime(task).date(), today)
+                    if deadline_formatter is not None
+                    else None
                 ),
             )
             for index, task in enumerate(tasks, start=1)

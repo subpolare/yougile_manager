@@ -3,8 +3,14 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from app.task_service import bucket_tasks, deadline_datetime
-from app.yougile import YouGileTask, _parse_task
+from app.task_service import bucket_tasks, deadline_datetime, project_buckets
+from app.yougile import (
+    WorkspaceSnapshot,
+    YouGileBoard,
+    YouGileColumn,
+    YouGileTask,
+    _parse_task,
+)
 
 
 MOSCOW = ZoneInfo("Europe/Moscow")
@@ -22,6 +28,8 @@ def task(
     archived: bool = False,
     deleted: bool = False,
     title: str | None = None,
+    board_order: int | None = None,
+    column_order: int | None = None,
 ) -> YouGileTask:
     return YouGileTask(
         id=task_id,
@@ -31,6 +39,8 @@ def task(
         completed=completed,
         archived=archived,
         deleted=deleted,
+        board_order=board_order,
+        column_order=column_order,
     )
 
 
@@ -142,3 +152,143 @@ def test_tasks_are_sorted_by_deadline_then_title() -> None:
     buckets = bucket_tasks(tasks, date(2026, 9, 7))
     assert ids(buckets.today) == ["a", "z", "b"]
 
+
+def test_tasks_use_column_position_instead_of_column_title_order() -> None:
+    tasks = [
+        task(
+            "alphabetically-first",
+            timestamp_ms(2026, 9, 7, 10),
+            title="А",
+            board_order=0,
+            column_order=2,
+        ),
+        task(
+            "visually-first",
+            timestamp_ms(2026, 9, 7, 15),
+            title="Я",
+            board_order=0,
+            column_order=0,
+        ),
+    ]
+    buckets = bucket_tasks(tasks, date(2026, 9, 7))
+    assert ids(buckets.today) == ["visually-first", "alphabetically-first"]
+
+
+def test_snapshot_column_sequence_drives_order_and_enriches_task_titles() -> None:
+    snapshot = WorkspaceSnapshot(
+        boards=(
+            YouGileBoard(
+                id="board",
+                project_id="project",
+                title="Доска",
+                display_order=0,
+            ),
+        ),
+        columns=(
+            YouGileColumn(
+                id="visually-first-column",
+                board_id="board",
+                title="Я-первая",
+                display_order=0,
+            ),
+            YouGileColumn(
+                id="alphabetically-first-column",
+                board_id="board",
+                title="А-вторая",
+                display_order=1,
+            ),
+        ),
+        tasks=(
+            YouGileTask(
+                id="alphabetically-first",
+                title="Задача A",
+                column_id="alphabetically-first-column",
+                deadline_ms=timestamp_ms(2026, 9, 7, 9),
+            ),
+            YouGileTask(
+                id="visually-first",
+                title="Задача Я",
+                column_id="visually-first-column",
+                deadline_ms=timestamp_ms(2026, 9, 7, 18),
+            ),
+        ),
+        users=(),
+    )
+
+    buckets = project_buckets(snapshot, "project", today=date(2026, 9, 7))
+
+    assert ids(buckets.today) == ["visually-first", "alphabetically-first"]
+    assert buckets.today[0].column_id == "visually-first-column"
+    assert buckets.today[0].column_title == "Я-первая"
+    assert buckets.today[0].column_order == 0
+
+
+def test_board_position_precedes_column_position() -> None:
+    tasks = [
+        task(
+            "second-board",
+            timestamp_ms(2026, 9, 7, 9),
+            board_order=1,
+            column_order=0,
+        ),
+        task(
+            "first-board",
+            timestamp_ms(2026, 9, 7, 18),
+            board_order=0,
+            column_order=10,
+        ),
+    ]
+    buckets = bucket_tasks(tasks, date(2026, 9, 7))
+    assert ids(buckets.today) == ["first-board", "second-board"]
+
+
+def test_deadline_and_title_sort_tasks_inside_the_same_column() -> None:
+    tasks = [
+        task(
+            "later",
+            timestamp_ms(2026, 9, 7, 18),
+            board_order=0,
+            column_order=0,
+        ),
+        task(
+            "same-z",
+            timestamp_ms(2026, 9, 7, 10),
+            title="Я",
+            board_order=0,
+            column_order=0,
+        ),
+        task(
+            "same-a",
+            timestamp_ms(2026, 9, 7, 10),
+            title="А",
+            board_order=0,
+            column_order=0,
+        ),
+    ]
+    buckets = bucket_tasks(tasks, date(2026, 9, 7))
+    assert ids(buckets.today) == ["same-a", "same-z", "later"]
+
+
+def test_overdue_tasks_are_sorted_oldest_to_newest_inside_a_column() -> None:
+    tasks = [
+        task(
+            "recent",
+            timestamp_ms(2026, 9, 6),
+            board_order=0,
+            column_order=0,
+        ),
+        task(
+            "oldest",
+            timestamp_ms(2026, 8, 20),
+            board_order=0,
+            column_order=0,
+        ),
+        task(
+            "middle",
+            timestamp_ms(2026, 9, 1),
+            board_order=0,
+            column_order=0,
+        ),
+    ]
+    buckets = bucket_tasks(tasks, date(2026, 9, 7))
+    assert ids(buckets.overdue) == ["oldest", "middle", "recent"]

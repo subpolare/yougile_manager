@@ -65,7 +65,13 @@ def bucket_tasks(tasks: tuple[YouGileTask, ...] | list[YouGileTask], today: date
         elif due_date < today:
             overdue_items.append(task)
 
-    key = lambda task: (deadline_datetime(task), task.title.casefold())
+    def key(task: YouGileTask) -> tuple[int, int, datetime, str]:
+        # Tasks produced by WorkspaceSnapshot always have these positions. The
+        # sentinels keep the pure bucketing helper usable for isolated raw tasks.
+        board_order = task.board_order if task.board_order is not None else 2**31
+        column_order = task.column_order if task.column_order is not None else 2**31
+        return board_order, column_order, deadline_datetime(task), task.title.casefold()
+
     return TaskBuckets(
         today=tuple(sorted(today_items, key=key)),
         week=tuple(sorted(week_items, key=key)),
@@ -100,11 +106,12 @@ class DigestService:
 
         if snapshot is None:
             snapshot = await self._yougile_client.fetch_workspace()  # type: ignore[attr-defined]
-        buckets = project_buckets(snapshot, project_id, today=today)
+        moscow_today = today or datetime.now(MOSCOW_TZ).date()
+        buckets = project_buckets(snapshot, project_id, today=moscow_today)
         messages = format_digest(
             buckets,
             self._telegram_by_user_id,
             user_names(snapshot.users),
+            today=moscow_today,
         )
         return messages, buckets
-

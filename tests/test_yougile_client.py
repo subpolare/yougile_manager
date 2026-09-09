@@ -117,7 +117,12 @@ async def test_workspace_uses_active_project_board_column_task_hierarchy() -> No
     ) as http:
         client = YouGileClient("test-key", http_client=http)
         snapshot = await client.fetch_workspace()
-    assert [task.id for task in snapshot.tasks_for_project("project")] == ["active"]
+    project_tasks = snapshot.tasks_for_project("project")
+    assert [task.id for task in project_tasks] == ["active"]
+    assert project_tasks[0].column_id == "column-active"
+    assert project_tasks[0].column_title == "A"
+    assert project_tasks[0].board_order == 0
+    assert project_tasks[0].column_order == 0
     assert snapshot.users[0].real_name == "Иван Иванов"
 
 
