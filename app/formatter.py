@@ -168,7 +168,7 @@ def _build_sections(
         ),
         (
             buckets.week,
-            "Помимо этого, до конца недели надо затащить еще 🥺 "
+            "Помимо этого, до конца недели есть еще 🥺 "
             f"{format_task_count(len(buckets.week))}:",
         ),
         (
