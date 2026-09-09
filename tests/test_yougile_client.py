@@ -174,6 +174,8 @@ async def test_documented_subtask_ids_resolve_from_task_list_without_duplicates(
     assert project_tasks[0].subtask_ids == ("child",)
     assert project_tasks[1].column_id == "column"
     assert project_tasks[1].column_title == "Постпродакшн"
+    assert project_tasks[1].parent_task_id == "parent"
+    assert project_tasks[1].parent_task_title == "Родитель"
     assert project_tasks[1].assigned == ("child-user",)
     assert project_tasks[1].deadline_ms == 1_789_000_000_000
 

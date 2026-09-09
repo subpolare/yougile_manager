@@ -117,9 +117,14 @@ def test_parent_and_subtask_are_independent_numbered_items_with_own_assignees(
     )[0]
 
     assert [item.id for item in buckets.today] == ["parent", "child"]
+    assert buckets.today[1].parent_task_id == "parent"
+    assert buckets.today[1].parent_task_title == "Рыба выпуска"
     assert "закрыть 2 задачи" in rendered
     assert "1. Постпродакшн. Рыба выпуска: @vlad" in rendered
-    assert "2. Постпродакшн. Нарезать ГЗК: @misha" in rendered
+    assert (
+        "2. Постпродакшн. Нарезать ГЗК "
+        "(подзадача внутри «Рыба выпуска»): @misha"
+    ) in rendered
 
 
 def test_subtask_uses_own_deadline_and_can_land_in_a_different_bucket() -> None:
@@ -160,7 +165,7 @@ def test_subtask_without_deadline_is_excluded_and_does_not_inherit_parent_deadli
     assert bucket_ids(buckets) == (["parent"], [], [])
 
 
-def test_subtask_deadline_annotations_use_the_existing_formatter(
+def test_subtask_deadline_annotations_use_special_compact_rendering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
@@ -168,22 +173,87 @@ def test_subtask_deadline_annotations_use_the_existing_formatter(
         (
             task(
                 "parent",
-                "Контейнер",
+                "Рыба выпуска",
                 column_id="postproduction",
-                subtask_ids=("tomorrow", "overdue"),
+                subtask_ids=(
+                    "tomorrow",
+                    "day-after-tomorrow",
+                    "later-week",
+                    "yesterday",
+                    "day-before-yesterday",
+                    "older-overdue",
+                ),
             ),
-            task("tomorrow", "Нарезать ГЗК", deadline_ms=timestamp_ms(10)),
-            task("overdue", "Проверить факты", deadline_ms=timestamp_ms(8)),
+            task(
+                "tomorrow",
+                "Записать ГЗК",
+                deadline_ms=timestamp_ms(10),
+                assigned=("user",),
+            ),
+            task(
+                "day-after-tomorrow",
+                "Бриф по графике",
+                deadline_ms=timestamp_ms(11),
+                assigned=("user",),
+            ),
+            task(
+                "later-week",
+                "Проверить текст",
+                deadline_ms=timestamp_ms(13),
+                assigned=("user",),
+            ),
+            task(
+                "yesterday",
+                "Проверить факты",
+                deadline_ms=timestamp_ms(8),
+                assigned=("user",),
+            ),
+            task(
+                "day-before-yesterday",
+                "Проверить источники",
+                deadline_ms=timestamp_ms(7),
+                assigned=("user",),
+            ),
+            task(
+                "older-overdue",
+                "Добавить ссылки",
+                deadline_ms=timestamp_ms(3),
+                assigned=("user",),
+            ),
         )
     )
     buckets = project_buckets(workspace, "project", today=TODAY)
-    rendered = format_digest(buckets, {}, {}, today=TODAY)[0]
+    rendered = format_digest(buckets, {"user": "@user"}, {}, today=TODAY)[0]
 
-    assert "Нарезать ГЗК (до завтра, 10.09)" in rendered
-    assert "Проверить факты (дедлайн вчера, 08.09)" in rendered
+    assert (
+        "Записать ГЗК (подзадача внутри «Рыба выпуска»), "
+        "до завтра, 10.09: @user"
+    ) in rendered
+    assert (
+        "Бриф по графике (подзадача внутри «Рыба выпуска»), "
+        "до послезавтра, 11.09: @user"
+    ) in rendered
+    assert (
+        "Проверить текст (подзадача внутри «Рыба выпуска»), "
+        "до 13.09: @user"
+    ) in rendered
+    assert (
+        "Проверить факты (подзадача внутри «Рыба выпуска»), "
+        "дедлайн вчера, 08.09.2026: @user"
+    ) in rendered
+    assert (
+        "Проверить источники (подзадача внутри «Рыба выпуска»), "
+        "дедлайн позавчера, 07.09.2026: @user"
+    ) in rendered
+    assert (
+        "Добавить ссылки (подзадача внутри «Рыба выпуска»), "
+        "дедлайн 03.09.2026: @user"
+    ) in rendered
+    future_section = rendered.split("<b>А еще вы просрочили", maxsplit=1)[0]
+    assert ".2026" not in future_section
 
 
-def test_subtask_without_assignee_uses_fallback_in_inherited_column(
+def test_today_subtask_without_assignee_uses_fallback_and_not_parent_assignee(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
@@ -191,11 +261,12 @@ def test_subtask_without_assignee_uses_fallback_in_inherited_column(
         (
             task(
                 "parent",
-                "Контейнер",
+                "Рыба выпуска",
                 column_id="postproduction",
+                assigned=("vlad",),
                 subtask_ids=("child",),
             ),
-            task("child", "Собрать монтаж", deadline_ms=timestamp_ms(8)),
+            task("child", "Собрать монтаж", deadline_ms=timestamp_ms(9)),
         )
     )
     buckets = project_buckets(workspace, "project", today=TODAY)
@@ -203,9 +274,42 @@ def test_subtask_without_assignee_uses_fallback_in_inherited_column(
 
     assert (
         "Постпродакшн. Собрать монтаж "
-        "(дедлайн вчера, 08.09) — "
+        "(подзадача внутри «Рыба выпуска») — "
         "вы забыли написать, кто за это отвечает"
     ) in rendered
+    assert "@vlad" not in rendered
+    assert "дедлайн" not in rendered
+
+
+def test_subtask_and_parent_titles_are_html_escaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
+    workspace = snapshot(
+        (
+            task(
+                "parent",
+                "Рыба <выпуска> & монтаж",
+                column_id="postproduction",
+                subtask_ids=("child",),
+            ),
+            task(
+                "child",
+                "<Бриф> & графика",
+                deadline_ms=timestamp_ms(9),
+                assigned=("user",),
+            ),
+        )
+    )
+    buckets = project_buckets(workspace, "project", today=TODAY)
+    rendered = format_digest(buckets, {"user": "@user"}, {}, today=TODAY)[0]
+
+    assert (
+        "Постпродакшн. &lt;Бриф&gt; &amp; графика "
+        "(подзадача внутри «Рыба &lt;выпуска&gt; "
+        "&amp; монтаж»): @user"
+    ) in rendered
+    assert "<Бриф>" not in rendered
 
 
 @pytest.mark.parametrize("status", ["completed", "archived", "deleted"])
@@ -345,6 +449,32 @@ def test_nested_subtasks_are_recursive_and_cycle_safe() -> None:
     buckets = project_buckets(workspace, "project", today=TODAY)
 
     assert [item.id for item in buckets.today] == ["parent", "child", "grandchild"]
+    assert buckets.today[1].parent_task_title == "Родитель"
+    assert buckets.today[2].parent_task_id == "child"
+    assert buckets.today[2].parent_task_title == "Дочерняя"
+
+
+def test_nested_subtask_renders_its_immediate_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
+    workspace = snapshot(
+        (
+            task(
+                "grandparent",
+                "Task A",
+                column_id="postproduction",
+                subtask_ids=("parent",),
+            ),
+            task("parent", "Subtask B", subtask_ids=("child",)),
+            task("child", "Subtask C", deadline_ms=timestamp_ms(9)),
+        )
+    )
+    buckets = project_buckets(workspace, "project", today=TODAY)
+    rendered = format_digest(buckets, {}, {}, today=TODAY)[0]
+
+    assert "Subtask C (подзадача внутри «Subtask B»)" in rendered
+    assert "Subtask C (подзадача внутри «Task A»)" not in rendered
 
 
 def test_explicit_column_from_another_project_prevents_subtask_leak() -> None:
@@ -391,18 +521,19 @@ def test_semantic_splitting_handles_many_flattened_subtasks(
 ) -> None:
     monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
     child_ids = tuple(f"child-{index}" for index in range(1, 16))
+    long_parent = "Очень длинный родительский заголовок " * 300
     tasks = (
         task(
             "parent",
-            "Родитель",
+            long_parent,
             column_id="postproduction",
-            deadline_ms=timestamp_ms(9, 8),
             subtask_ids=child_ids,
         ),
         *(
             task(
                 child_id,
-                f"Самостоятельная подзадача {index}",
+                f"Самостоятельная подзадача {index} "
+                + "с длинным названием " * 80,
                 deadline_ms=timestamp_ms(9, 9),
             )
             for index, child_id in enumerate(child_ids, start=1)
@@ -416,7 +547,11 @@ def test_semantic_splitting_handles_many_flattened_subtasks(
         for chunk in chunks
         for match in re.findall(r"(?m)^(\d+)\. ", chunk)
     ]
-    assert numbering == list(range(1, 17))
-    greeting_chunks = sum("☀️ С добрым утром, коллеги!" in chunk for chunk in chunks)
+    assert numbering == list(range(1, 16))
+    greeting_chunks = sum(
+        "☀️ С добрым утром, коллеги!" in chunk for chunk in chunks
+    )
     assert greeting_chunks == 1
     assert all(telegram_visible_length(chunk) <= 210 for chunk in chunks)
+    assert all("подзадача внутри «" in chunk for chunk in chunks[1:])
+    assert "…" in "".join(chunks)

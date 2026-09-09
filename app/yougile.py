@@ -75,6 +75,8 @@ class YouGileTask:
     board_order: int | None = None
     column_order: int | None = None
     subtask_ids: tuple[str, ...] = ()
+    parent_task_id: str | None = None
+    parent_task_title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,19 +98,18 @@ class WorkspaceSnapshot:
             if column.board_id in boards_by_id and not column.deleted
         }
         tasks_by_id = {task.id: task for task in self.tasks}
+        referenced_ids = {
+            child_id for task in self.tasks for child_id in task.subtask_ids
+        }
         result: list[YouGileTask] = []
         visited: set[str] = set()
 
-        for task in self.tasks:
-            column = columns_by_id.get(task.column_id) if task.column_id is not None else None
-            if column is None:
-                continue
-
-            pending: list[tuple[YouGileTask, YouGileColumn]] = [
-                (tasks_by_id[task.id], column)
-            ]
+        def add_hierarchy(root: YouGileTask, root_column: YouGileColumn) -> None:
+            pending: list[
+                tuple[YouGileTask, YouGileColumn, YouGileTask | None]
+            ] = [(root, root_column, None)]
             while pending:
-                current, inherited_column = pending.pop()
+                current, inherited_column, parent = pending.pop()
                 if current.id in visited:
                     continue
 
@@ -130,6 +131,8 @@ class WorkspaceSnapshot:
                         column_title=current_column.title,
                         board_order=board.display_order,
                         column_order=current_column.display_order,
+                        parent_task_id=parent.id if parent is not None else None,
+                        parent_task_title=parent.title if parent is not None else None,
                     )
                 )
 
@@ -140,7 +143,26 @@ class WorkspaceSnapshot:
                 for child_id in reversed(current.subtask_ids):
                     child = tasks_by_id.get(child_id)
                     if child is not None:
-                        pending.append((child, current_column))
+                        pending.append((child, current_column, current))
+
+        # Traverse true roots first so a child that unusually has its own columnId
+        # still receives parent metadata rather than being normalized as a root.
+        for task in self.tasks:
+            if task.id in referenced_ids:
+                continue
+            column = columns_by_id.get(task.column_id) if task.column_id is not None else None
+            if column is None:
+                continue
+            add_hierarchy(tasks_by_id[task.id], column)
+
+        # Malformed cycles have no true root. Retain the previous safe behavior by
+        # seeding any still-unvisited task that has a valid project column.
+        for task in self.tasks:
+            if task.id in visited:
+                continue
+            column = columns_by_id.get(task.column_id) if task.column_id is not None else None
+            if column is not None:
+                add_hierarchy(tasks_by_id[task.id], column)
         return tuple(result)
 
 
