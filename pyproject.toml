@@ -1,0 +1,33 @@
+[project]
+name = "yougile-telegram-digest"
+version = "0.1.0"
+description = "Telegram daily task digests for YouGile projects"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.22,<4",
+    "apscheduler>=3.11,<4",
+    "asyncmy>=0.2.10,<1",
+    "cryptography>=46,<48",
+    "httpx>=0.28,<1",
+    "pydantic-settings>=2.10,<3",
+    "python-dotenv>=1.1,<2",
+    "sqlalchemy[asyncio]>=2.0.43,<3",
+    "tzdata>=2025.2",
+]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.21,<1",
+    "pytest>=8.4,<9",
+    "pytest-asyncio>=1.1,<2",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100

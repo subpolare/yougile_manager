@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import re
+
+import pytest
+
+from app.formatter import format_digest, format_task_count, telegram_visible_length
+from app.greetings import DUMB_GREETINGS
+from app.task_service import TaskBuckets
+from app.yougile import YouGileTask
+
+
+FIXED_GREETING = "С добрым утром"
+FIXED_INTRO = f"☀️ {FIXED_GREETING}, коллеги!"
+
+
+@pytest.fixture(autouse=True)
+def fixed_greeting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.formatter.random.choice", lambda greetings: FIXED_GREETING)
+
+
+def task(task_id: str, title: str, *, assigned: tuple[str, ...] = ("u",)) -> YouGileTask:
+    return YouGileTask(
+        id=task_id,
+        title=title,
+        column_id="column",
+        deadline_ms=1,
+        assigned=assigned,
+    )
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        (0, "0 задач"),
+        (1, "1 задачу"),
+        (2, "2 задачи"),
+        (3, "3 задачи"),
+        (4, "4 задачи"),
+        (5, "5 задач"),
+        (10, "10 задач"),
+        (11, "11 задач"),
+        (12, "12 задач"),
+        (13, "13 задач"),
+        (14, "14 задач"),
+        (20, "20 задач"),
+        (21, "21 задачу"),
+        (22, "22 задачи"),
+        (25, "25 задач"),
+        (111, "111 задач"),
+        (121, "121 задачу"),
+    ],
+)
+def test_task_count_pluralization(count: int, expected: str) -> None:
+    assert format_task_count(count) == expected
+
+
+def test_random_greeting_is_selected_once_and_inserted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def choose(greetings: list[str]) -> str:
+        nonlocal calls
+        calls += 1
+        assert greetings is DUMB_GREETINGS
+        return "Мыш (кродеться)"
+
+    monkeypatch.setattr("app.formatter.random.choice", choose)
+    today = tuple(task(str(index), "Очень длинная задача " * 4) for index in range(8))
+    chunks = format_digest(TaskBuckets(today=today, week=(), overdue=()), {}, {"u": "Иван"}, max_length=170)
+    assert calls == 1
+    assert chunks[0].startswith("☀️ Мыш (кродеться), коллеги!")
+    assert sum("Мыш (кродеться)" in chunk for chunk in chunks) == 1
+
+
+def test_digest_escapes_api_text_and_formats_no_assignees_without_colon() -> None:
+    buckets = TaskBuckets(
+        today=(task("1", "<опасная & задача>", assigned=()),),
+        week=(),
+        overdue=(),
+    )
+    result = format_digest(buckets, {}, {})[0]
+    assert "&lt;опасная &amp; задача&gt;" in result
+    assert "задача&gt; — вы забыли" in result
+    assert "задача&gt;:" not in result
+
+
+def test_exact_new_section_text_and_blank_lines() -> None:
+    buckets = TaskBuckets(
+        today=(task("t", "Сегодня"),),
+        week=(task("w1", "Неделя 1"), task("w2", "Неделя 2")),
+        overdue=tuple(task(f"o{index}", f"Долг {index}") for index in range(5)),
+    )
+    result = format_digest(buckets, {}, {"u": "Иван"})[0]
+    assert result.startswith(f"{FIXED_INTRO}\n\n")
+    assert "<b>Сегодня вам надо закрыть 💎 1 задачу:</b>\n\n1. Сегодня: Иван" in result
+    assert (
+        "<b>Помимо этого, до конца недели надо затащить еще 🥺 2 задачи:</b>\n\n"
+        "1. Неделя 1: Иван"
+    ) in result
+    assert (
+        "<b>А еще вы просрочили 💩 5 задач, это плохо! "
+        "Я буду тегать вас, пока не закроете их.</b>\n\n1. Долг 0: Иван"
+    ) in result
+    assert "каждое утро" not in result
+    assert "\n\n\n" not in result
+    assert "2. Неделя 2: Иван\n\n<b>А еще" in result
+
+
+def test_message_splitting_prefers_section_boundaries() -> None:
+    buckets = TaskBuckets(
+        today=(task("1", "Сегодня " + "длинная " * 4),),
+        week=(task("2", "Неделя " + "длинная " * 4),),
+        overdue=(),
+    )
+    chunks = format_digest(buckets, {}, {"u": "Иван"}, max_length=150)
+    assert len(chunks) >= 2
+    assert chunks[0].startswith(f"{FIXED_INTRO}\n\n")
+    assert sum(FIXED_INTRO in chunk for chunk in chunks) == 1
+    assert all(telegram_visible_length(chunk) <= 150 for chunk in chunks)
+    assert chunks[1].startswith("<b>Помимо этого")
+    assert all("</b>\n\n1. " in chunk for chunk in chunks)
+
+
+def test_oversized_section_splits_only_between_items_and_keeps_numbering() -> None:
+    today = tuple(task(str(index), f"Задача {index} " + "длинная " * 5) for index in range(1, 9))
+    buckets = TaskBuckets(today=today, week=(), overdue=())
+    chunks = format_digest(buckets, {}, {"u": "Иван"}, max_length=160)
+    assert len(chunks) > 2
+    assert chunks[0] == FIXED_INTRO
+    assert chunks[1].startswith("<b>Сегодня вам надо")
+    assert "</b>\n\n1. " in chunks[1]
+    assert all(telegram_visible_length(chunk) <= 160 for chunk in chunks)
+    numbering = [
+        int(match)
+        for chunk in chunks
+        for match in re.findall(r"(?m)^(\d+)\. ", chunk)
+    ]
+    assert numbering == list(range(1, 9))
+    assert all("…" not in chunk for chunk in chunks)
+
+
+def test_pathological_task_title_is_truncated_safely() -> None:
+    buckets = TaskBuckets(today=(task("1", "<&>" * 300),), week=(), overdue=())
+    chunks = format_digest(buckets, {}, {"u": "Иван"}, max_length=180)
+    assert all(telegram_visible_length(chunk) <= 180 for chunk in chunks)
+    assert "…" in "".join(chunks)
+    assert "<" not in "".join(chunks).replace("<b>", "").replace("</b>", "")

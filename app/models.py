@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+
+from sqlalchemy import BigInteger, Date, DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class ChatProjectBinding(Base):
+    __tablename__ = "chat_project_bindings"
+
+    telegram_chat_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False
+    )
+    yougile_project_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    project_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    project_title: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DailyDispatch(Base):
+    __tablename__ = "daily_dispatches"
+    __table_args__ = (
+        UniqueConstraint("telegram_chat_id", "dispatch_date", name="uq_daily_dispatch_chat_date"),
+    )
+
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dispatch_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

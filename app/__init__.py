@@ -1,0 +1,2 @@
+"""YouGile Telegram digest bot."""
+
