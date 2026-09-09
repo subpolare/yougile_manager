@@ -126,6 +126,58 @@ async def test_workspace_uses_active_project_board_column_task_hierarchy() -> No
     assert snapshot.users[0].real_name == "Иван Иванов"
 
 
+async def test_documented_subtask_ids_resolve_from_task_list_without_duplicates() -> None:
+    responses = {
+        "/api-v2/boards": page(
+            [{"id": "board", "title": "Board", "projectId": "project"}]
+        ),
+        "/api-v2/columns": page(
+            [{"id": "column", "title": "Постпродакшн", "boardId": "board"}]
+        ),
+        "/api-v2/task-list": page(
+            [
+                {
+                    "id": "parent",
+                    "title": "Родитель",
+                    "timestamp": 1,
+                    "columnId": "column",
+                    "subtasks": ["child"],
+                    "assigned": ["parent-user"],
+                },
+                {
+                    "id": "child",
+                    "title": "Подзадача",
+                    "timestamp": 2,
+                    "subtasks": [],
+                    "assigned": ["child-user"],
+                    "deadline": {
+                        "deadline": 1_789_000_000_000,
+                        "startDate": 1_788_000_000_000,
+                    },
+                },
+            ]
+        ),
+        "/api-v2/users": page([]),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=responses[request.url.path])
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://yougile.test/api-v2"
+    ) as http:
+        client = YouGileClient("test-key", http_client=http)
+        snapshot = await client.fetch_workspace()
+
+    project_tasks = snapshot.tasks_for_project("project")
+    assert [task.id for task in project_tasks] == ["parent", "child"]
+    assert project_tasks[0].subtask_ids == ("child",)
+    assert project_tasks[1].column_id == "column"
+    assert project_tasks[1].column_title == "Постпродакшн"
+    assert project_tasks[1].assigned == ("child-user",)
+    assert project_tasks[1].deadline_ms == 1_789_000_000_000
+
+
 async def test_malformed_pagination_is_not_treated_as_empty() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"content": []})
@@ -155,3 +207,25 @@ def test_nullable_optional_fields_match_live_api_representation() -> None:
     assert project.deleted is False
     assert task.deleted is False
     assert task.assigned == ()
+
+
+def test_subtask_ids_are_validated_and_deduplicated_stably() -> None:
+    parsed = _parse_task(
+        {
+            "id": "task",
+            "title": "Task",
+            "timestamp": 1,
+            "subtasks": ["child-1", "child-2", "child-1"],
+        }
+    )
+    assert parsed.subtask_ids == ("child-1", "child-2")
+
+    with pytest.raises(YouGileDataError, match="task.subtasks"):
+        _parse_task(
+            {
+                "id": "bad-task",
+                "title": "Bad Task",
+                "timestamp": 1,
+                "subtasks": [{"id": "not-documented"}],
+            }
+        )

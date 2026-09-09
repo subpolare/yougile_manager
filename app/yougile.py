@@ -74,6 +74,7 @@ class YouGileTask:
     column_title: str | None = None
     board_order: int | None = None
     column_order: int | None = None
+    subtask_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,23 +95,52 @@ class WorkspaceSnapshot:
             for column in self.columns
             if column.board_id in boards_by_id and not column.deleted
         }
+        tasks_by_id = {task.id: task for task in self.tasks}
         result: list[YouGileTask] = []
+        visited: set[str] = set()
+
         for task in self.tasks:
-            if task.column_id is None:
-                continue
-            column = columns_by_id.get(task.column_id)
+            column = columns_by_id.get(task.column_id) if task.column_id is not None else None
             if column is None:
                 continue
-            board = boards_by_id[column.board_id]
-            result.append(
-                replace(
-                    task,
-                    board_id=board.id,
-                    column_title=column.title,
-                    board_order=board.display_order,
-                    column_order=column.display_order,
+
+            pending: list[tuple[YouGileTask, YouGileColumn]] = [
+                (tasks_by_id[task.id], column)
+            ]
+            while pending:
+                current, inherited_column = pending.pop()
+                if current.id in visited:
+                    continue
+
+                if current.column_id is None:
+                    current_column = inherited_column
+                else:
+                    # An explicit column outside this project must never be inherited over.
+                    current_column = columns_by_id.get(current.column_id)
+                if current_column is None:
+                    continue
+
+                visited.add(current.id)
+                board = boards_by_id[current_column.board_id]
+                result.append(
+                    replace(
+                        current,
+                        column_id=current_column.id,
+                        board_id=board.id,
+                        column_title=current_column.title,
+                        board_order=board.display_order,
+                        column_order=current_column.display_order,
+                    )
                 )
-            )
+
+                # TaskListDto represents subtasks as IDs. Active subtasks are present
+                # in /task-list as full task records, with their own state/deadline/
+                # assignees and possible nested subtask IDs. Reverse-push retains API
+                # subtask order while an explicit stack avoids recursion-depth issues.
+                for child_id in reversed(current.subtask_ids):
+                    child = tasks_by_id.get(child_id)
+                    if child is not None:
+                        pending.append((child, current_column))
         return tuple(result)
 
 
@@ -383,6 +413,14 @@ def _parse_task(row: Mapping[str, Any]) -> YouGileTask:
     ):
         raise YouGileDataError("task.assigned must be an array of strings")
 
+    subtasks_raw = row.get("subtasks")
+    if subtasks_raw is None:
+        subtasks_raw = []
+    if not isinstance(subtasks_raw, list) or any(
+        not isinstance(task_id, str) for task_id in subtasks_raw
+    ):
+        raise YouGileDataError("task.subtasks must be an array of strings")
+
     deadline_ms: int | None = None
     deadline_raw = row.get("deadline")
     if deadline_raw is not None:
@@ -402,6 +440,7 @@ def _parse_task(row: Mapping[str, Any]) -> YouGileTask:
         title=_required_string(row, "title", "task"),
         column_id=column_id,
         deadline_ms=deadline_ms,
+        subtask_ids=tuple(dict.fromkeys(subtasks_raw)),
         assigned=tuple(assigned_raw),
         completed=_optional_bool(row, "completed"),
         archived=_optional_bool(row, "archived"),

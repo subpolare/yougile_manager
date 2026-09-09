@@ -177,16 +177,16 @@ def test_exact_new_section_text_and_blank_lines() -> None:
     ) in result
     assert (
         "<b>Помимо этого, до конца недели есть еще 2 задачи:</b>\n\n"
-        "1. Редакция. Неделя 1 (дедлайн завтра, 10.09.2026): Иван"
+        "1. Редакция. Неделя 1 (до завтра, 10.09): Иван"
     ) in result
     assert (
         "<b>А еще вы просрочили 5 задач! Буду тегать вас, пока не исправитесь:</b>\n\n"
-        "1. Редакция. Долг 0 (дедлайн был вчера, 08.09.2026): Иван"
+        "1. Редакция. Долг 0 (дедлайн вчера, 08.09): Иван"
     ) in result
     assert "каждое утро" not in result
     assert "\n\n\n" not in result
     assert (
-        "2. Редакция. Неделя 2 (дедлайн послезавтра, 11.09.2026): Иван\n\n"
+        "2. Редакция. Неделя 2 (до послезавтра, 11.09): Иван\n\n"
         "<b>А еще"
     ) in result
 
@@ -194,9 +194,9 @@ def test_exact_new_section_text_and_blank_lines() -> None:
 @pytest.mark.parametrize(
     ("deadline", "expected"),
     [
-        (date(2026, 9, 10), "(дедлайн завтра, 10.09.2026)"),
-        (date(2026, 9, 11), "(дедлайн послезавтра, 11.09.2026)"),
-        (date(2026, 9, 13), "(дедлайн до 13.09.2026)"),
+        (date(2026, 9, 10), "(до завтра, 10.09)"),
+        (date(2026, 9, 11), "(до послезавтра, 11.09)"),
+        (date(2026, 9, 13), "(до 13.09)"),
     ],
 )
 def test_future_deadline_descriptions(deadline: date, expected: str) -> None:
@@ -206,9 +206,9 @@ def test_future_deadline_descriptions(deadline: date, expected: str) -> None:
 @pytest.mark.parametrize(
     ("deadline", "expected"),
     [
-        (date(2026, 9, 8), "(дедлайн был вчера, 08.09.2026)"),
-        (date(2026, 9, 7), "(дедлайн был позавчера, 07.09.2026)"),
-        (date(2026, 9, 3), "(дедлайн был 03.09.2026)"),
+        (date(2026, 9, 8), "(дедлайн вчера, 08.09)"),
+        (date(2026, 9, 7), "(дедлайн позавчера, 07.09)"),
+        (date(2026, 9, 3), "(дедлайн 03.09)"),
     ],
 )
 def test_overdue_deadline_descriptions(deadline: date, expected: str) -> None:
@@ -232,10 +232,10 @@ def test_no_assignee_has_column_and_overdue_deadline_without_colon() -> None:
     )
     result = format_digest(buckets, {}, {}, today=TODAY)[0]
     assert (
-        "1. Редакция. Бриф Графика (дедлайн был вчера, 08.09.2026) — "
+        "1. Редакция. Бриф Графика (дедлайн вчера, 08.09) — "
         "вы забыли написать, кто за это отвечает"
     ) in result
-    assert "08.09.2026):" not in result
+    assert "08.09):" not in result
 
 
 def test_message_splitting_prefers_section_boundaries() -> None:
