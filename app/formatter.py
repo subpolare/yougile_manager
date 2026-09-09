@@ -173,8 +173,8 @@ def _build_sections(
         ),
         (
             buckets.overdue,
-            f"А еще вы просрочили 💩 {format_task_count(len(buckets.overdue))}, это плохо! "
-            "Я буду тегать вас, пока не закроете их.",
+            f"А еще вы просрочили 💩 {format_task_count(len(buckets.overdue))}! "
+            "Буду тегать вас, пока не исправитесь:",
         ),
     )
     sections: list[_Section] = []
