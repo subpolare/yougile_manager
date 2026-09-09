@@ -164,7 +164,7 @@ def _build_sections(
     specifications = (
         (
             buckets.today,
-            f"Сегодня вам надо закрыть 💎 {format_task_count(len(buckets.today))}:",
+            f"Сегодня вам надо закрыть {format_task_count(len(buckets.today))}:",
         ),
         (
             buckets.week,
@@ -173,7 +173,7 @@ def _build_sections(
         ),
         (
             buckets.overdue,
-            f"А еще вы просрочили 💩 {format_task_count(len(buckets.overdue))}! "
+            f"А еще вы просрочили {format_task_count(len(buckets.overdue))}! "
             "Буду тегать вас, пока не исправитесь:",
         ),
     )
