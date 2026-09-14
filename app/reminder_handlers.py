@@ -34,7 +34,10 @@ def create_reminder_router(service, identity):
             if not await known(message):
                 return
             try:
-                await service.create_from_voice(message)
+                if service.task_drafts is not None and await service.task_drafts.eligible(message.from_user):
+                    await service.task_drafts.create_from_voice(message)
+                else:
+                    await service.create_from_voice(message)
             except UnusableVoice:
                 await message.answer(VOICE_FAILURE)
             except Exception as exc:
@@ -45,9 +48,18 @@ def create_reminder_router(service, identity):
     async def reminder_callback(callback: CallbackQuery):
         await service.callback(callback)
 
+    @router.callback_query(F.data.startswith("vd:"))
+    async def draft_callback(callback: CallbackQuery):
+        if service.task_drafts is not None:
+            await service.task_drafts.callback(callback)
+        else:
+            await callback.answer("Этот черновик или действие уже неактуально.")
+
     @router.message(F.chat.type == "private", F.text, ~F.text.lstrip().startswith("/"))
     async def replacement_text(message: Message):
         if message.from_user:
+            if service.task_drafts is not None and await service.task_drafts.replace_text(message):
+                return
             await service.replace_text(message)
 
     return router

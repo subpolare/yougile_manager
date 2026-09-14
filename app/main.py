@@ -13,6 +13,7 @@ from app.daily_greeting import DailyGreetingProvider
 from app.error_reporter import ErrorReporter, PrivacyLogFilter
 from app.openai_service import OpenAIService
 from app.reminder_service import ReminderService
+from app.voice_task_drafts import VoiceTaskDraftService
 from app.runtime_errors import PollingError
 from app.personal_digest import PersonalDigestService
 from app.personal_identity import PersonalIdentity
@@ -78,10 +79,12 @@ async def run() -> None:
         digest_service = DigestService(yougile, mappings, greetings)
         personal_service = PersonalDigestService(yougile, greetings)
         reminders = ReminderService(session_factory, bot, openai_service, reporter)
+        identity = PersonalIdentity(session_factory, mappings, sasha_tg=settings.sasha_tg)
+        reminders.task_drafts = VoiceTaskDraftService(reminders, identity, yougile)
         dispatcher = Dispatcher()
         dispatcher.include_router(create_router(
             session_factory=session_factory, yougile=yougile, digest_service=digest_service,
-            personal_service=personal_service, personal_identity=PersonalIdentity(session_factory, mappings),
+            personal_service=personal_service, personal_identity=identity,
             reminder_service=reminders, error_reporter=reporter,
         ))
         scheduler = create_scheduler(

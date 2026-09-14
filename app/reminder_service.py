@@ -51,6 +51,7 @@ class ReminderService:
         self.bot = bot
         self.openai = openai_service
         self.errors = error_reporter
+        self.task_drafts = None
 
     @asynccontextmanager
     async def transaction(self, user_id):
@@ -203,6 +204,8 @@ class ReminderService:
                         old_edit = edit if edit and edit.reminder_id == reminder_id else None
                         await session.delete(reminder)
                     elif action == "edit":
+                        if self.task_drafts is not None:
+                            await self.task_drafts.close_input(session, user_id)
                         if edit:
                             old_edit = edit
                             await session.delete(edit)
@@ -344,3 +347,5 @@ class ReminderService:
                     await self.report(exc, "expire_edit", telegram_user_id=user_id)
         except Exception as exc:
             await self.report(exc, "list_expired_edits")
+        if self.task_drafts is not None:
+            await self.task_drafts.cleanup_expired()

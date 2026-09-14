@@ -46,11 +46,12 @@ def personal_project_name(project: YouGileProject) -> str | None:
 def personal_task_index(
     snapshot: WorkspaceSnapshot,
     *,
-    sasha_yougile_user_id: str,
+    sasha_yougile_user_id: str | None = None,
 ) -> Mapping[str, tuple[YouGileTask, ...]]:
     """Normalize each project once per snapshot, then index by own assignees."""
     by_user: dict[str, list[YouGileTask]] = defaultdict(list)
     seen: set[str] = set()
+    sasha_yougile_user_id = sasha_yougile_user_id or os.getenv("SASHA_YG")
 
     for project in snapshot.projects:
         name = personal_project_name(project)
@@ -71,7 +72,7 @@ def personal_task_index(
 
             recipients = set(task.assigned)
 
-            if is_sasha_project:
+            if is_sasha_project and sasha_yougile_user_id:
                 recipients.add(sasha_yougile_user_id)
 
             for uid in recipients:
@@ -195,7 +196,7 @@ class PersonalDigestService:
                 snapshot = await self.yougile.fetch_workspace()
             index = personal_task_index(
                 snapshot,
-                sasha_yougile_user_id=os.environ["SASHA_YG"],
+                sasha_yougile_user_id=os.getenv("SASHA_YG"),
             )
         today = today or datetime.now(MOSCOW_TZ).date()
         buckets = personal_buckets(index.get(user_id, ()), today)

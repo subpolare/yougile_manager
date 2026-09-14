@@ -15,9 +15,17 @@ STOP = "Хорошо, не буду присылать никакие уведо
 
 
 class PersonalIdentity:
-    def __init__(self, session_factory: SessionFactory, mappings: dict[str, str]) -> None:
+    def __init__(self, session_factory: SessionFactory, mappings: dict[str, str],
+                 *, sasha_tg: str | None = None) -> None:
         self.session_factory = session_factory
         self.mappings = mappings
+        self.sasha_user_id = self.lookup(sasha_tg) if sasha_tg else None
+
+    async def is_sasha(self, telegram_id: int, username: str | None) -> bool:
+        if self.sasha_user_id is None:
+            return False
+        uid, _ = await self.resolve(telegram_id, username)
+        return uid == self.sasha_user_id
 
     def lookup(self, username: str | None) -> str | None:
         normalized = "@" + (username or "").removeprefix("@")

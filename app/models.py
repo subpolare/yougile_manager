@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from uuid import uuid4
 
 from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -111,3 +112,33 @@ class ErrorAdminTarget(Base):
 
     identity: Mapped[str] = mapped_column(String(32), primary_key=True)
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class VoiceTaskDraft(Base):
+    __tablename__ = "voice_task_drafts"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    original_voice_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    original_voice_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    transcript: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    deadline_date: Mapped[date | None] = mapped_column(Date)
+    idempotency_key: Mapped[str] = mapped_column(String(36), nullable=False,
+                                               default=lambda: str(uuid4()))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class VoiceTaskDraftSession(Base):
+    __tablename__ = "voice_task_draft_sessions"
+
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    draft_id: Mapped[int] = mapped_column(
+        ForeignKey("voice_task_drafts.id", ondelete="CASCADE"), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    prompt_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    prompt_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

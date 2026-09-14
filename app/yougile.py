@@ -8,8 +8,10 @@ import time
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time as calendar_time
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -211,6 +213,7 @@ class YouGileClient:
             timeout=httpx.Timeout(20.0),
         )
         self._rate_limiter = rate_limiter or AsyncWindowRateLimiter()
+        self._sasha_destination_lock = asyncio.Lock()
 
     async def __aenter__(self) -> YouGileClient:
         return self
@@ -222,12 +225,17 @@ class YouGileClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def _request_json(self, path: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
+    async def _request_json(self, path: str, params: Mapping[str, Any], *,
+                            method: str = "GET", body=None) -> Mapping[str, Any]:
         attempts = 4
         for attempt in range(attempts):
             await self._rate_limiter.acquire()
             try:
-                response = await self._client.get(path, params=params, headers=self._headers)
+                if method == "GET":
+                    response = await self._client.get(path, params=params, headers=self._headers)
+                else:
+                    response = await self._client.request(method, path, params=params,
+                                                          json=body, headers=self._headers)
             except httpx.HTTPError as exc:
                 logger.warning("YouGile request failed path=%s error=%s", path, type(exc).__name__)
                 if attempt == attempts - 1:
@@ -301,6 +309,62 @@ class YouGileClient:
     async def fetch_projects(self) -> list[YouGileProject]:
         rows = await self._paginate("/projects", params={"includeDeleted": False})
         return [_parse_project(row) for row in rows]
+
+    async def resolve_sasha_column(self) -> str:
+        """Exact active hierarchy only. Server idempotency also covers other processes.
+
+        API authority: https://yougile.com/api-json, CreateColumnDto (2026-09-15).
+        Re-fetch on every resolution so deleted/moved entities cannot poison a cache.
+        """
+        async with self._sasha_destination_lock:
+            projects = [r for r in await self._paginate("/projects", params={"includeDeleted": False})
+                        if self._active(r) and _required_string(r, "title", "project").strip() == "ONLY Саша"]
+            if len(projects) != 1:
+                raise YouGileDataError("Expected exactly one active Sasha project")
+            project_id = _required_string(projects[0], "id", "project")
+            boards = [r for r in await self._paginate("/boards", params={"includeDeleted": False})
+                      if self._active(r) and r.get("projectId") == project_id]
+            board_ids = {_required_string(r, "id", "board") for r in boards}
+
+            async def matching_columns():
+                return [r for r in await self._paginate("/columns", params={"includeDeleted": False})
+                        if self._active(r) and r.get("boardId") in board_ids
+                        and _required_string(r, "title", "column").strip() == "Задачи из бота"]
+
+            columns = await matching_columns()
+            if len(columns) > 1:
+                raise YouGileDataError("Multiple exact Sasha columns")
+            if columns:
+                return _required_string(columns[0], "id", "column")
+            if len(boards) != 1:
+                raise YouGileDataError("Sasha project has no unambiguous active board")
+            # Same key across restarts, clients and concurrent processes; no employee data.
+            key = str(uuid5(NAMESPACE_URL, f"yougile-bot:sasha-column:{project_id}"))
+            created = await self._request_json("/columns", {}, method="POST", body={
+                "title": "Задачи из бота", "boardId": next(iter(board_ids)), "idempotencyKey": key,
+            })
+            column_id = _required_string(created, "id", "column")
+            columns = await matching_columns()
+            if len(columns) != 1 or columns[0].get("id") != column_id:
+                raise YouGileDataError("Created Sasha column could not be verified")
+            return column_id
+
+    @staticmethod
+    def _active(row):
+        return not _optional_bool(row, "deleted") and not _optional_bool(row, "archived")
+
+    async def create_sasha_task(self, *, title: str, deadline: date, idempotency_key: str) -> str:
+        column_id = await self.resolve_sasha_column()
+        # Inverse of task_service.deadline_datetime: calendar day in Europe/Moscow.
+        deadline_ms = int(datetime.combine(deadline, calendar_time.min,
+                                          tzinfo=ZoneInfo("Europe/Moscow")).timestamp() * 1000)
+        result = await self._request_json("/tasks", {}, method="POST", body={
+            "title": title, "columnId": column_id, "assigned": [],
+            "deadline": {"deadline": deadline_ms, "withTime": False,
+                         "blockedPoints": [], "links": []},
+            "idempotencyKey": idempotency_key,
+        })
+        return _required_string(result, "id", "task")
 
     async def fetch_users(self) -> list[YouGileUser]:
         rows = await self._paginate("/users")
