@@ -13,6 +13,8 @@ from aiogram.utils.chat_action import ChatActionSender
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import SessionFactory, get_binding, replace_binding
+from app.personal_digest import PersonalDigestService
+from app.personal_identity import PersonalIdentity, UNKNOWN, START, RETURNING, STOP
 from app.task_service import DigestService, match_projects, project_number
 from app.yougile import YouGileClient, YouGileError
 
@@ -25,8 +27,61 @@ def create_router(
     session_factory: SessionFactory,
     yougile: YouGileClient,
     digest_service: DigestService,
+    personal_service: PersonalDigestService | None = None,
+    personal_identity: PersonalIdentity | None = None,
 ) -> Router:
     router = Router(name="commands")
+
+    async def subscription_command(message: Message, action: str) -> None:
+        if message.chat.type != ChatType.PRIVATE:
+            return
+        if message.from_user is None or personal_identity is None:
+            await message.answer(UNKNOWN)
+            return
+        try:
+            uid, returning = await personal_identity.resolve(
+                message.from_user.id, message.from_user.username, action=action
+            )
+        except SQLAlchemyError:
+            logger.exception("Personal subscription update failed user_id=%s", message.from_user.id)
+            await message.answer(f"Не удалось сохранить подписку. Попробуйте /{action} позже.")
+            return
+        await message.answer(UNKNOWN if uid is None else (
+            STOP if action == "stop" else RETURNING if returning else START
+        ))
+
+    @router.message(Command("start"))
+    async def start(message: Message) -> None:
+        await subscription_command(message, "start")
+
+    @router.message(Command("stop"))
+    async def stop(message: Message) -> None:
+        await subscription_command(message, "stop")
+
+    async def private_task(message: Message, bot: Bot) -> None:
+        async with ChatActionSender.typing(chat_id=message.chat.id, bot=bot):
+            try:
+                if message.from_user is None or personal_identity is None or personal_service is None:
+                    await message.answer(UNKNOWN)
+                    return
+                uid, _ = await personal_identity.resolve(
+                    message.from_user.id, message.from_user.username
+                )
+                if uid is None:
+                    await message.answer(UNKNOWN)
+                    return
+                chunks, _ = await personal_service.build(uid)
+                for chunk in chunks:
+                    await message.answer(chunk)
+            except YouGileError:
+                logger.exception("YouGile personal lookup failed chat_id=%s", message.chat.id)
+                await message.answer("Не удалось получить задачи из YouGile. Попробуйте /task позже.")
+            except SQLAlchemyError:
+                logger.exception("Personal digest database failure chat_id=%s", message.chat.id)
+                await message.answer("Не удалось подготовить дайджест. Попробуйте /task позже.")
+            except TelegramAPIError as exc:
+                logger.error("Personal Telegram send failed chat_id=%s error=%s",
+                             message.chat.id, type(exc).__name__)
 
     @router.message(Command("init"))
     async def initialize(message: Message, command: CommandObject, bot: Bot) -> None:
@@ -127,11 +182,14 @@ def create_router(
             "Этот чат связан с:\n"
             f"{html.escape(binding.project_title)}\n"
             f"YouGile project ID: {html.escape(binding.yougile_project_id)}\n"
-            "Ежедневная рассылка: 12:00 МСК"
+            "Рассылка по будням: 12:00 МСК"
         )
 
     @router.message(Command("task"))
     async def task(message: Message, bot: Bot) -> None:
+        if message.chat.type == ChatType.PRIVATE:
+            await private_task(message, bot)
+            return
         if not _is_group(message):
             await message.answer("Эта команда работает только в групповых чатах.")
             return
@@ -172,6 +230,10 @@ def create_router(
                 await message.answer(
                     "Не удалось получить задачи из YouGile. Попробуйте /task позже."
                 )
+                return
+            except SQLAlchemyError:
+                logger.exception("Group greeting database failure chat_id=%s", message.chat.id)
+                await message.answer("Не удалось подготовить дайджест. Попробуйте /task позже.")
                 return
             logger.info(
                 "Digest ready project_id=%s today=%s week=%s overdue=%s",

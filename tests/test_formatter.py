@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
+from functools import partial
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -15,20 +16,15 @@ from app.formatter import (
     russian_weekday,
     telegram_visible_length,
 )
-from app.greetings import DUMB_GREETINGS
 from app.task_service import TaskBuckets
 from app.yougile import YouGileTask
 
 
 FIXED_GREETING = "С добрым утром"
+format_digest_with_greeting = partial(format_digest, greeting=FIXED_GREETING)
 FIXED_INTRO = f"☀️ {FIXED_GREETING}, коллеги!"
 TODAY = date(2026, 9, 9)
 MOSCOW = ZoneInfo("Europe/Moscow")
-
-
-@pytest.fixture(autouse=True)
-def fixed_greeting(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.formatter.random.choice", lambda greetings: FIXED_GREETING)
 
 
 def task(
@@ -119,29 +115,17 @@ def test_russian_months_use_genitive_case() -> None:
     ]
 
 
-def test_random_greeting_is_selected_once_and_inserted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = 0
-
-    def choose(greetings: list[str]) -> str:
-        nonlocal calls
-        calls += 1
-        assert greetings is DUMB_GREETINGS
-        return "Мыш (кродеться)"
-
-    monkeypatch.setattr("app.formatter.random.choice", choose)
+def test_supplied_daily_greeting_is_inserted_only_once() -> None:
     today = tuple(task(str(index), "Очень длинная задача " * 4) for index in range(8))
-    chunks = format_digest(
+    chunks = format_digest_with_greeting(
         TaskBuckets(today=today, week=(), overdue=()),
         {},
         {"u": "Иван"},
         today=TODAY,
         max_length=170,
     )
-    assert calls == 1
-    assert chunks[0].startswith("☀️ Мыш (кродеться), коллеги!")
-    assert sum("Мыш (кродеться)" in chunk for chunk in chunks) == 1
+    assert chunks[0].startswith(FIXED_INTRO)
+    assert sum(FIXED_GREETING in chunk for chunk in chunks) == 1
 
 
 def test_digest_escapes_api_text_and_formats_no_assignees_without_colon() -> None:
@@ -150,7 +134,7 @@ def test_digest_escapes_api_text_and_formats_no_assignees_without_colon() -> Non
         week=(),
         overdue=(),
     )
-    result = format_digest(buckets, {}, {}, today=TODAY)[0]
+    result = format_digest_with_greeting(buckets, {}, {}, today=TODAY)[0]
     assert "Редакция. &lt;опасная &amp; задача&gt;" in result
     assert "&lt;опасная &amp; задача&gt;" in result
     assert "задача&gt; — вы забыли" in result
@@ -169,7 +153,7 @@ def test_exact_new_section_text_and_blank_lines() -> None:
             for index in range(5)
         ),
     )
-    result = format_digest(buckets, {}, {"u": "Иван"}, today=TODAY)[0]
+    result = format_digest_with_greeting(buckets, {}, {"u": "Иван"}, today=TODAY)[0]
     assert result.startswith(f"{FIXED_INTRO}\n\n")
     assert (
         "<b>Сегодня среда, 9 сентября, и вам надо закрыть 1 задачу:</b>\n\n"
@@ -217,7 +201,7 @@ def test_overdue_deadline_descriptions(deadline: date, expected: str) -> None:
 
 def test_today_has_no_deadline_annotation() -> None:
     buckets = TaskBuckets(today=(task("1", "Рыба выпуска"),), week=(), overdue=())
-    result = format_digest(buckets, {}, {"u": "Иван"}, today=TODAY)[0]
+    result = format_digest_with_greeting(buckets, {}, {"u": "Иван"}, today=TODAY)[0]
     assert "1. Редакция. Рыба выпуска: Иван" in result
     assert "дедлайн" not in result
 
@@ -230,7 +214,7 @@ def test_no_assignee_has_column_and_overdue_deadline_without_colon() -> None:
             task("1", "Бриф Графика", assigned=(), deadline=date(2026, 9, 8)),
         ),
     )
-    result = format_digest(buckets, {}, {}, today=TODAY)[0]
+    result = format_digest_with_greeting(buckets, {}, {}, today=TODAY)[0]
     assert (
         "1. Редакция. Бриф Графика (дедлайн вчера, 08.09) — "
         "вы забыли написать, кто за это отвечает"
@@ -246,7 +230,7 @@ def test_message_splitting_prefers_section_boundaries() -> None:
         ),
         overdue=(),
     )
-    chunks = format_digest(buckets, {}, {"u": "Иван"}, today=TODAY, max_length=180)
+    chunks = format_digest_with_greeting(buckets, {}, {"u": "Иван"}, today=TODAY, max_length=180)
     assert len(chunks) >= 2
     assert chunks[0].startswith(f"{FIXED_INTRO}\n\n")
     assert sum(FIXED_INTRO in chunk for chunk in chunks) == 1
@@ -258,7 +242,7 @@ def test_message_splitting_prefers_section_boundaries() -> None:
 def test_oversized_section_splits_only_between_items_and_keeps_numbering() -> None:
     today = tuple(task(str(index), f"Задача {index} " + "длинная " * 5) for index in range(1, 9))
     buckets = TaskBuckets(today=today, week=(), overdue=())
-    chunks = format_digest(buckets, {}, {"u": "Иван"}, today=TODAY, max_length=180)
+    chunks = format_digest_with_greeting(buckets, {}, {"u": "Иван"}, today=TODAY, max_length=180)
     assert len(chunks) > 2
     assert chunks[0] == FIXED_INTRO
     assert chunks[1].startswith("<b>Сегодня среда, 9 сентября")
@@ -275,7 +259,7 @@ def test_oversized_section_splits_only_between_items_and_keeps_numbering() -> No
 
 def test_pathological_task_title_is_truncated_safely() -> None:
     buckets = TaskBuckets(today=(task("1", "<&>" * 300),), week=(), overdue=())
-    chunks = format_digest(buckets, {}, {"u": "Иван"}, today=TODAY, max_length=210)
+    chunks = format_digest_with_greeting(buckets, {}, {"u": "Иван"}, today=TODAY, max_length=210)
     assert all(telegram_visible_length(chunk) <= 210 for chunk in chunks)
     assert "…" in "".join(chunks)
     assert "<" not in "".join(chunks).replace("<b>", "").replace("</b>", "")

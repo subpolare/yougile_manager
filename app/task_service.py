@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from app.daily_greeting import DailyGreetingProvider
 from app.yougile import WorkspaceSnapshot, YouGileProject, YouGileTask, YouGileUser
 
 
@@ -91,9 +92,11 @@ def project_buckets(
 
 
 class DigestService:
-    def __init__(self, yougile_client: object, telegram_by_user_id: dict[str, str]) -> None:
+    def __init__(self, yougile_client: object, telegram_by_user_id: dict[str, str],
+                 greeting_provider: DailyGreetingProvider) -> None:
         self._yougile_client = yougile_client
         self._telegram_by_user_id = telegram_by_user_id
+        self._greeting_provider = greeting_provider
 
     async def build(
         self,
@@ -113,5 +116,6 @@ class DigestService:
             self._telegram_by_user_id,
             user_names(snapshot.users),
             today=moscow_today,
+            greeting=await self._greeting_provider.get(moscow_today),
         )
         return messages, buckets

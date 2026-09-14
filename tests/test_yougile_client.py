@@ -73,6 +73,7 @@ async def test_429_retries_and_respects_zero_retry_after() -> None:
 
 async def test_workspace_uses_active_project_board_column_task_hierarchy() -> None:
     responses = {
+        "/api-v2/projects": page([{"id": "project", "title": "#7 Project"}]),
         "/api-v2/boards": page(
             [
                 {"id": "board-active", "title": "A", "projectId": "project"},
@@ -128,6 +129,7 @@ async def test_workspace_uses_active_project_board_column_task_hierarchy() -> No
 
 async def test_documented_subtask_ids_resolve_from_task_list_without_duplicates() -> None:
     responses = {
+        "/api-v2/projects": page([{"id": "project", "title": "#7 Project"}]),
         "/api-v2/boards": page(
             [{"id": "board", "title": "Board", "projectId": "project"}]
         ),

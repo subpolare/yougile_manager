@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.models import Base, ChatProjectBinding, DailyDispatch
+from app.models import Base, ChatProjectBinding, DailyDispatch, PersonalDigestSubscription
 
 
 logger = logging.getLogger(__name__)
@@ -152,3 +152,31 @@ async def remove_dispatch(
                 DailyDispatch.dispatch_date == dispatch_date,
             )
         )
+
+
+async def list_personal_subscriptions(session_factory: SessionFactory) -> list[PersonalDigestSubscription]:
+    async with session_factory() as session:
+        return list(await session.scalars(select(PersonalDigestSubscription).where(
+            PersonalDigestSubscription.enabled.is_(True)
+        ).order_by(PersonalDigestSubscription.telegram_user_id)))
+
+
+async def dispatch_personal_once(
+    session_factory: SessionFactory, *, telegram_id: int, expected_user_id: str,
+    dispatch_date: date, sender: Callable[[], Awaitable[None]],
+) -> bool:
+    async with session_factory() as session, session.begin():
+        subscription = await session.scalar(select(PersonalDigestSubscription).where(
+            PersonalDigestSubscription.telegram_user_id == telegram_id
+        ).with_for_update())
+        if (subscription is None or not subscription.enabled
+                or subscription.yougile_user_id != expected_user_id):
+            return False
+        # Private user IDs are positive; group chat IDs are negative. Both use
+        # the same destination/date ledger without changing existing records.
+        if await session.get(DailyDispatch, (telegram_id, dispatch_date)) is not None:
+            return False
+        await sender()
+        session.add(DailyDispatch(telegram_chat_id=telegram_id, dispatch_date=dispatch_date))
+        await session.flush()
+        return True

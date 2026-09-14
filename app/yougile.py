@@ -77,6 +77,7 @@ class YouGileTask:
     subtask_ids: tuple[str, ...] = ()
     parent_task_id: str | None = None
     parent_task_title: str | None = None
+    personal_project_title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,7 @@ class WorkspaceSnapshot:
     columns: tuple[YouGileColumn, ...]
     tasks: tuple[YouGileTask, ...]
     users: tuple[YouGileUser, ...]
+    projects: tuple[YouGileProject, ...] = ()
 
     def tasks_for_project(self, project_id: str) -> tuple[YouGileTask, ...]:
         boards_by_id = {
@@ -305,11 +307,12 @@ class YouGileClient:
         return [_parse_user(row) for row in rows]
 
     async def fetch_workspace(self) -> WorkspaceSnapshot:
-        boards_rows, columns_rows, tasks_rows, users_rows = await asyncio.gather(
+        boards_rows, columns_rows, tasks_rows, users_rows, projects = await asyncio.gather(
             self._paginate("/boards", params={"includeDeleted": False}),
             self._paginate("/columns", params={"includeDeleted": False}),
             self._paginate("/task-list", params={"includeDeleted": False}),
             self._paginate("/users"),
+            self.fetch_projects(),
         )
         return WorkspaceSnapshot(
             # REST API v2 exposes no separate board/column position property. Its
@@ -318,6 +321,7 @@ class YouGileClient:
             columns=_parse_columns_in_api_order(columns_rows),
             tasks=tuple(_parse_task(row) for row in tasks_rows),
             users=tuple(_parse_user(row) for row in users_rows),
+            projects=tuple(projects),
         )
 
 

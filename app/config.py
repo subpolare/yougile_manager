@@ -31,6 +31,8 @@ def parse_employee_mappings(values: Mapping[str, object]) -> dict[str, str]:
         except (ValueError, AttributeError):
             continue
         username = normalized.get(f"{key[:-3]}_TG", "")
+        if username and not username.startswith("@"):
+            username = "@" + username
         if TELEGRAM_USERNAME_RE.fullmatch(username):
             result[user_id] = username
     return result

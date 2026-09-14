@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
+from functools import partial
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -12,6 +13,7 @@ from app.yougile import WorkspaceSnapshot, YouGileBoard, YouGileColumn, YouGileT
 
 
 TODAY = date(2026, 9, 9)
+format_digest_with_greeting = partial(format_digest, greeting="С добрым утром")
 MOSCOW = ZoneInfo("Europe/Moscow")
 
 
@@ -89,7 +91,6 @@ def bucket_ids(buckets: TaskBuckets) -> tuple[list[str], list[str], list[str]]:
 def test_parent_and_subtask_are_independent_numbered_items_with_own_assignees(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
     workspace = snapshot(
         (
             task(
@@ -109,7 +110,7 @@ def test_parent_and_subtask_are_independent_numbered_items_with_own_assignees(
         )
     )
     buckets = project_buckets(workspace, "project", today=TODAY)
-    rendered = format_digest(
+    rendered = format_digest_with_greeting(
         buckets,
         {"vlad": "@vlad", "misha": "@misha"},
         {},
@@ -168,7 +169,6 @@ def test_subtask_without_deadline_is_excluded_and_does_not_inherit_parent_deadli
 def test_subtask_deadline_annotations_use_special_compact_rendering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
     workspace = snapshot(
         (
             task(
@@ -223,7 +223,7 @@ def test_subtask_deadline_annotations_use_special_compact_rendering(
         )
     )
     buckets = project_buckets(workspace, "project", today=TODAY)
-    rendered = format_digest(buckets, {"user": "@user"}, {}, today=TODAY)[0]
+    rendered = format_digest_with_greeting(buckets, {"user": "@user"}, {}, today=TODAY)[0]
 
     assert (
         "Записать ГЗК (подзадача внутри «Рыба выпуска»), "
@@ -256,7 +256,6 @@ def test_subtask_deadline_annotations_use_special_compact_rendering(
 def test_today_subtask_without_assignee_uses_fallback_and_not_parent_assignee(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
     workspace = snapshot(
         (
             task(
@@ -270,7 +269,7 @@ def test_today_subtask_without_assignee_uses_fallback_and_not_parent_assignee(
         )
     )
     buckets = project_buckets(workspace, "project", today=TODAY)
-    rendered = format_digest(buckets, {}, {}, today=TODAY)[0]
+    rendered = format_digest_with_greeting(buckets, {}, {}, today=TODAY)[0]
 
     assert (
         "Постпродакшн. Собрать монтаж "
@@ -284,7 +283,6 @@ def test_today_subtask_without_assignee_uses_fallback_and_not_parent_assignee(
 def test_subtask_and_parent_titles_are_html_escaped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
     workspace = snapshot(
         (
             task(
@@ -302,7 +300,7 @@ def test_subtask_and_parent_titles_are_html_escaped(
         )
     )
     buckets = project_buckets(workspace, "project", today=TODAY)
-    rendered = format_digest(buckets, {"user": "@user"}, {}, today=TODAY)[0]
+    rendered = format_digest_with_greeting(buckets, {"user": "@user"}, {}, today=TODAY)[0]
 
     assert (
         "Постпродакшн. &lt;Бриф&gt; &amp; графика "
@@ -457,7 +455,6 @@ def test_nested_subtasks_are_recursive_and_cycle_safe() -> None:
 def test_nested_subtask_renders_its_immediate_parent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
     workspace = snapshot(
         (
             task(
@@ -471,7 +468,7 @@ def test_nested_subtask_renders_its_immediate_parent(
         )
     )
     buckets = project_buckets(workspace, "project", today=TODAY)
-    rendered = format_digest(buckets, {}, {}, today=TODAY)[0]
+    rendered = format_digest_with_greeting(buckets, {}, {}, today=TODAY)[0]
 
     assert "Subtask C (подзадача внутри «Subtask B»)" in rendered
     assert "Subtask C (подзадача внутри «Task A»)" not in rendered
@@ -519,7 +516,6 @@ def test_explicit_column_from_another_project_prevents_subtask_leak() -> None:
 def test_semantic_splitting_handles_many_flattened_subtasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.formatter.random.choice", lambda _: "С добрым утром")
     child_ids = tuple(f"child-{index}" for index in range(1, 16))
     long_parent = "Очень длинный родительский заголовок " * 300
     tasks = (
@@ -540,7 +536,7 @@ def test_semantic_splitting_handles_many_flattened_subtasks(
         ),
     )
     buckets = project_buckets(snapshot(tasks), "project", today=TODAY)
-    chunks = format_digest(buckets, {}, {}, today=TODAY, max_length=210)
+    chunks = format_digest_with_greeting(buckets, {}, {}, today=TODAY, max_length=210)
 
     numbering = [
         int(match)

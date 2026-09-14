@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+from datetime import datetime
 
 from sqlalchemy import func, select
 
 from app.db import replace_binding
+from app.daily_greeting import DailyGreetingProvider
 from app.models import DailyDispatch
 from app.scheduler import run_daily_dispatch
 from app.task_service import DigestService
 from app.yougile import WorkspaceSnapshot
 
 
-async def test_scheduler_uses_mocked_telegram_and_is_idempotent(database) -> None:
+async def test_scheduler_uses_mocked_telegram_and_is_idempotent(database, monkeypatch) -> None:
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return datetime(2026, 9, 9, 12, tzinfo=tz)
+
+    monkeypatch.setattr("app.scheduler.datetime", Clock)
     _, factory = database
     await replace_binding(
         factory,
@@ -24,7 +32,7 @@ async def test_scheduler_uses_mocked_telegram_and_is_idempotent(database) -> Non
     yougile = AsyncMock()
     yougile.fetch_workspace.return_value = snapshot
     bot = AsyncMock()
-    service = DigestService(yougile, {})
+    service = DigestService(yougile, {}, DailyGreetingProvider(factory))
 
     await run_daily_dispatch(
         bot=bot,
@@ -42,4 +50,3 @@ async def test_scheduler_uses_mocked_telegram_and_is_idempotent(database) -> Non
     bot.send_message.assert_awaited_once()
     async with factory() as session:
         assert await session.scalar(select(func.count()).select_from(DailyDispatch)) == 1
-

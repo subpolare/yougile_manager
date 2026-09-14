@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import html
-import random
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Protocol
 
-from app.greetings import DUMB_GREETINGS
 from app.task_service import MOSCOW_TZ, TaskBuckets, deadline_datetime
 from app.yougile import YouGileTask
 
@@ -15,7 +14,7 @@ from app.yougile import YouGileTask
 TELEGRAM_MESSAGE_LIMIT = 4096
 NO_TASKS = "На сегодня и до конца недели задач с дедлайнами нет 🎉"
 NO_ASSIGNEES = "вы забыли написать, кто за это отвечает"
-_B_TAG_RE = re.compile(r"</?b>")
+_B_TAG_RE = re.compile(r"</?(?:b|i|blockquote)>")
 RUSSIAN_WEEKDAYS = (
     "понедельник",
     "вторник",
@@ -128,10 +127,14 @@ class _TaskLine:
         return html.escape(prefix + separator + shortened_assignees)
 
 
+class RenderableTaskLine(Protocol):
+    def render(self, max_visible_units: int = TELEGRAM_MESSAGE_LIMIT) -> str: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _Section:
     heading: str
-    lines: tuple[_TaskLine, ...]
+    lines: tuple[RenderableTaskLine, ...]
 
     def render(self) -> str:
         heading = f"<b>{html.escape(self.heading)}</b>"
@@ -235,11 +238,12 @@ def format_digest(
     telegram_by_user_id: dict[str, str],
     display_name_by_user_id: dict[str, str],
     *,
+    greeting: str,
     today: date | None = None,
     max_length: int = TELEGRAM_MESSAGE_LIMIT,
 ) -> list[str]:
     moscow_today = today or datetime.now(MOSCOW_TZ).date()
-    intro = f"☀️ {html.escape(random.choice(DUMB_GREETINGS))}, коллеги!"
+    intro = f"☀️ {html.escape(greeting)}, коллеги!"
     sections = _build_sections(
         buckets,
         telegram_by_user_id,
@@ -248,6 +252,12 @@ def format_digest(
     )
     if not sections:
         return [f"{intro}\n\n{NO_TASKS}"]
+
+    return split_digest(intro, sections, max_length)
+
+
+def split_digest(intro: str, sections: list[_Section], max_length: int) -> list[str]:
+    """Shared semantic packing for both digest formats."""
 
     full = "\n\n".join([intro, *(section.render() for section in sections)])
     if telegram_visible_length(full) <= max_length:
