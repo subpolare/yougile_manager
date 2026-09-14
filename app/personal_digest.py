@@ -27,7 +27,14 @@ EMPTY = "На сегодня и до конца недели у тебя зад�
 def personal_project_name(project: YouGileProject) -> str | None:
     if project.deleted:
         return None
+
     title = project.title.strip()
+    
+    if not title.startswith("#"):
+        return None
+
+    title = title.split("/", 1)[0].strip()
+    
     if title.startswith("#"):
         title = title.split("/", 1)[0].strip()
         if EXCLUDED_WORDS.search(title):
