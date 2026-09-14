@@ -36,12 +36,13 @@ def workspace(tasks, titles=("#7 Эволюция / Монтаж", "ТОПКАС
     ("#7 Эволюция / Монтаж", "#7 Эволюция"),
     ("#12 Космос/Продакшн", "#12 Космос"), ("#3 Вирусы", "#3 Вирусы"),
     ("  #7 Эволюция / Монтаж  ", "#7 Эволюция"),
-    ("  ТОПКАСТ / Монтаж  ", "ТОПКАСТ / Монтаж"),
+    ("  ТОПКАСТ / Монтаж  ", None),
     ("#5 Голова / A", None), ("#15 Шифры / A", None),
     ("#19 Растения / A", None), ("#23 Рак / A", None),
     ("#1 рАк / A", None), ("#23 Ракообразные / A", "#23 Ракообразные"),
     ("#23 (Рак) / A", None), ("#7 Эволюция / Рак", "#7 Эволюция"),
-    ("Рак / A", "Рак / A"),
+    ("Рак / A", None),
+    ("Агргатные", None),
 ])
 def test_personal_project_normalization(title, expected):
     assert personal_project_name(YouGileProject("p", title)) == expected
@@ -61,11 +62,11 @@ def test_aggregation_all_projects_own_assignees_and_duplicate_ids():
         item("no-assignee", assigned=()),
     ])
     tasks = personal_task_index(snapshot)["u"]
-    assert {t.id for t in tasks} == {"child", "nested", "ordinary", "multi", "topcast"}
-    assert len(tasks) == 5
+    assert {t.id for t in tasks} == {"child", "nested", "ordinary", "multi"}
+    assert len(tasks) == 4
     nested = next(t for t in tasks if t.id == "nested")
     assert nested.parent_task_id == "child" and nested.parent_task_title == "child"
-    assert next(t for t in tasks if t.id == "topcast").personal_project_title == "ТОПКАСТ"
+    assert all(t.id != "topcast" for t in tasks)  # Current temporary #-only filter.
 
 
 @pytest.mark.parametrize("state", [dict(completed=True), dict(archived=True),

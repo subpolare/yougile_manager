@@ -22,7 +22,7 @@ SessionFactory = async_sessionmaker[AsyncSession]
 
 
 def create_engine_and_session(url: str) -> tuple[AsyncEngine, SessionFactory]:
-    engine = create_async_engine(url, pool_pre_ping=True, pool_recycle=1800)
+    engine = create_async_engine(url, pool_pre_ping=True, pool_recycle=1800, hide_parameters=True)
     return engine, async_sessionmaker(engine, expire_on_commit=False)
 
 

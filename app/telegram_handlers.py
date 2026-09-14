@@ -29,8 +29,20 @@ def create_router(
     digest_service: DigestService,
     personal_service: PersonalDigestService | None = None,
     personal_identity: PersonalIdentity | None = None,
+    reminder_service=None,
+    error_reporter=None,
 ) -> Router:
     router = Router(name="commands")
+
+    async def report(exc, operation, message):
+        if error_reporter is not None:
+            await error_reporter.report(exc, component="telegram", operation=operation,
+                                        telegram_chat_id=message.chat.id)
+
+    if error_reporter is not None:
+        from app.runtime_errors import RuntimeErrorMiddleware
+        router.message.outer_middleware(RuntimeErrorMiddleware(error_reporter))
+        router.callback_query.outer_middleware(RuntimeErrorMiddleware(error_reporter))
 
     async def subscription_command(message: Message, action: str) -> None:
         if message.chat.type != ChatType.PRIVATE:
@@ -42,8 +54,9 @@ def create_router(
             uid, returning = await personal_identity.resolve(
                 message.from_user.id, message.from_user.username, action=action
             )
-        except SQLAlchemyError:
-            logger.exception("Personal subscription update failed user_id=%s", message.from_user.id)
+        except SQLAlchemyError as exc:
+            await report(exc, "command", message)
+            logger.error("Personal subscription update failed user_id=%s", message.from_user.id)
             await message.answer(f"Не удалось сохранить подписку. Попробуйте /{action} позже.")
             return
         await message.answer(UNKNOWN if uid is None else (
@@ -60,35 +73,38 @@ def create_router(
 
     async def private_task(message: Message, bot: Bot) -> None:
         async with ChatActionSender.typing(chat_id=message.chat.id, bot=bot):
+            if message.from_user is None or personal_identity is None or personal_service is None:
+                await message.answer(UNKNOWN)
+                return
+            uid, _ = await personal_identity.resolve(
+                message.from_user.id, message.from_user.username
+            )
+            if uid is None:
+                await message.answer(UNKNOWN)
+                return
             try:
-                if message.from_user is None or personal_identity is None or personal_service is None:
-                    await message.answer(UNKNOWN)
-                    return
-                uid, _ = await personal_identity.resolve(
-                    message.from_user.id, message.from_user.username
-                )
-                if uid is None:
-                    await message.answer(UNKNOWN)
-                    return
                 chunks, _ = await personal_service.build(uid)
                 for chunk in chunks:
                     await message.answer(chunk)
-            except YouGileError:
-                logger.exception("YouGile personal lookup failed chat_id=%s", message.chat.id)
-                await message.answer("Не удалось получить задачи из YouGile. Попробуйте /task позже.")
-            except SQLAlchemyError:
-                logger.exception("Personal digest database failure chat_id=%s", message.chat.id)
-                await message.answer("Не удалось подготовить дайджест. Попробуйте /task позже.")
-            except TelegramAPIError as exc:
-                logger.error("Personal Telegram send failed chat_id=%s error=%s",
-                             message.chat.id, type(exc).__name__)
+            except Exception as exc:
+                await report(exc, "private_task", message)
+                failure = ("Не удалось получить задачи из YouGile. Попробуйте /task позже."
+                           if isinstance(exc, YouGileError) else
+                           "Не удалось подготовить дайджест. Попробуйте /task позже.")
+                try:
+                    await message.answer(failure)
+                except Exception as send_exc:
+                    await report(send_exc, "private_task_error_response", message)
+            finally:
+                if reminder_service is not None:
+                    await reminder_service.deliver(message.from_user.id)
 
     @router.message(Command("init"))
     async def initialize(message: Message, command: CommandObject, bot: Bot) -> None:
         if not _is_group(message):
             await message.answer("Эта команда работает только в групповых чатах.")
             return
-        if not await _is_admin(message, bot):
+        if not await (_is_admin(message, bot, error_reporter) if error_reporter else _is_admin(message, bot)):
             await message.answer("Только администратор или владелец чата может использовать /init.")
             return
 
@@ -103,8 +119,9 @@ def create_router(
         ):
             try:
                 projects = await yougile.fetch_projects()
-            except YouGileError:
-                logger.exception(
+            except YouGileError as exc:
+                await report(exc, "command", message)
+                logger.error(
                     "YouGile project lookup failed for /init chat_id=%s", message.chat.id
                 )
                 await message.answer("Не удалось получить проекты из YouGile. Попробуйте /init позже.")
@@ -139,6 +156,7 @@ def create_router(
                     project_title=project.title,
                 )
             except SQLAlchemyError as exc:
+                await report(exc, "command", message)
                 logger.error(
                     "Binding update failed chat_id=%s project_id=%s error=%s",
                     message.chat.id,
@@ -168,6 +186,7 @@ def create_router(
         try:
             binding = await get_binding(session_factory, message.chat.id)
         except SQLAlchemyError as exc:
+            await report(exc, "command", message)
             logger.error(
                 "Binding read failed chat_id=%s error=%s", message.chat.id, type(exc).__name__
             )
@@ -201,6 +220,7 @@ def create_router(
             try:
                 binding = await get_binding(session_factory, message.chat.id)
             except SQLAlchemyError as exc:
+                await report(exc, "command", message)
                 logger.error(
                     "Binding read failed chat_id=%s error=%s",
                     message.chat.id,
@@ -221,8 +241,9 @@ def create_router(
             )
             try:
                 chunks, buckets = await digest_service.build(binding.yougile_project_id)
-            except YouGileError:
-                logger.exception(
+            except YouGileError as exc:
+                await report(exc, "command", message)
+                logger.error(
                     "YouGile task lookup failed for /task chat_id=%s project_id=%s",
                     message.chat.id,
                     binding.yougile_project_id,
@@ -231,8 +252,9 @@ def create_router(
                     "Не удалось получить задачи из YouGile. Попробуйте /task позже."
                 )
                 return
-            except SQLAlchemyError:
-                logger.exception("Group greeting database failure chat_id=%s", message.chat.id)
+            except SQLAlchemyError as exc:
+                await report(exc, "command", message)
+                logger.error("Group greeting database failure chat_id=%s", message.chat.id)
                 await message.answer("Не удалось подготовить дайджест. Попробуйте /task позже.")
                 return
             logger.info(
@@ -246,12 +268,16 @@ def create_router(
                 for chunk in chunks:
                     await message.answer(chunk)
             except TelegramAPIError as exc:
+                await report(exc, "command", message)
                 logger.error(
                     "Telegram send failed chat_id=%s error=%s",
                     message.chat.id,
                     type(exc).__name__,
                 )
 
+    if reminder_service is not None:
+        from app.reminder_handlers import create_reminder_router
+        router.include_router(create_reminder_router(reminder_service, personal_identity))
     return router
 
 
@@ -259,12 +285,14 @@ def _is_group(message: Message) -> bool:
     return message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
 
 
-async def _is_admin(message: Message, bot: Bot) -> bool:
+async def _is_admin(message: Message, bot: Bot, error_reporter=None) -> bool:
     if message.from_user is None:
         return False
     try:
         member = await bot.get_chat_member(message.chat.id, message.from_user.id)
     except TelegramAPIError as exc:
+        if error_reporter is not None:
+            await error_reporter.report(exc, component="telegram", operation="check_group_admin")
         logger.warning(
             "Telegram admin check failed chat_id=%s error=%s",
             message.chat.id,

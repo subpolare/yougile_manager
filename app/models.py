@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -59,3 +59,55 @@ class DailyDigestGreeting(Base):
     digest_date: Mapped[date] = mapped_column(Date, primary_key=True)
     greeting: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+# UTC-naive DATETIME values: MySQL does not preserve timezone information.
+class VoiceReminder(Base):
+    __tablename__ = "voice_reminders"
+    __table_args__ = (Index("ix_voice_owner_order", "telegram_user_id", "created_at", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    original_voice_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    original_voice_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    transcript: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class ReminderDelivery(Base):
+    __tablename__ = "reminder_deliveries"
+    __table_args__ = (
+        UniqueConstraint("telegram_chat_id", "telegram_message_id", name="uq_reminder_message"),
+        UniqueConstraint("reminder_id", "scheduled_date", name="uq_reminder_schedule"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    reminder_id: Mapped[int] = mapped_column(
+        ForeignKey("voice_reminders.id", ondelete="CASCADE"), nullable=False
+    )
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    telegram_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    scheduled_date: Mapped[date | None] = mapped_column(Date)
+
+
+class ReminderEditSession(Base):
+    __tablename__ = "reminder_edit_sessions"
+
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    reminder_id: Mapped[int] = mapped_column(
+        ForeignKey("voice_reminders.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    prompt_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    prompt_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class ErrorAdminTarget(Base):
+    __tablename__ = "error_admin_targets"
+
+    identity: Mapped[str] = mapped_column(String(32), primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)

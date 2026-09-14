@@ -19,14 +19,20 @@ from app.yougile import YouGileClient, YouGileError
 logger = logging.getLogger(__name__)
 
 
-async def run_daily_dispatch(
+async def _run_yougile_dispatch(
     *,
     bot: Bot,
     session_factory: SessionFactory,
     yougile: YouGileClient,
     digest_service: DigestService,
     personal_service: PersonalDigestService | None = None,
+    reminder_service=None,
+    error_reporter=None,
 ) -> None:
+    async def report(exc, operation):
+        if error_reporter is not None:
+            await error_reporter.report(exc, component="scheduler", operation=operation)
+
     dispatch_date = datetime.now(MOSCOW_TZ).date()
     if dispatch_date.weekday() >= 5:
         return
@@ -34,7 +40,8 @@ async def run_daily_dispatch(
     try:
         bindings = await list_bindings(session_factory)
         subscriptions = await list_personal_subscriptions(session_factory)
-    except SQLAlchemyError as exc:
+    except Exception as exc:
+        await report(exc, "yougile_dispatch")
         logger.error("Could not load bindings error=%s", type(exc).__name__)
         return
     if not bindings and not subscriptions:
@@ -43,8 +50,9 @@ async def run_daily_dispatch(
 
     try:
         snapshot = await yougile.fetch_workspace()
-    except YouGileError:
-        logger.exception("YouGile workspace fetch failed during automatic dispatch")
+    except Exception as exc:
+        await report(exc, "yougile_dispatch")
+        logger.error("YouGile workspace fetch failed during automatic dispatch")
         return
 
     for binding in bindings:
@@ -55,7 +63,8 @@ async def run_daily_dispatch(
                 today=dispatch_date,
             )
         except Exception as exc:
-            logger.exception(
+            await report(exc, "yougile_dispatch")
+            logger.error(
                 "Automatic digest generation failed chat_id=%s project_id=%s error=%s",
                 binding.telegram_chat_id,
                 binding.yougile_project_id,
@@ -84,19 +93,22 @@ async def run_daily_dispatch(
                 sender=send_all,
             )
         except TelegramAPIError as exc:
+            await report(exc, "yougile_dispatch")
             logger.error(
                 "Telegram automatic send failed chat_id=%s error=%s",
                 binding.telegram_chat_id,
                 type(exc).__name__,
             )
         except SQLAlchemyError as exc:
+            await report(exc, "yougile_dispatch")
             logger.error(
                 "Automatic dispatch database failure chat_id=%s error=%s",
                 binding.telegram_chat_id,
                 type(exc).__name__,
             )
-        except Exception:
-            logger.exception("Automatic send failed chat_id=%s", binding.telegram_chat_id)
+        except Exception as exc:
+            await report(exc, "yougile_dispatch")
+            logger.error("Automatic send failed chat_id=%s", binding.telegram_chat_id)
         else:
             logger.info(
                 "Automatic dispatch result chat_id=%s sent=%s",
@@ -104,7 +116,11 @@ async def run_daily_dispatch(
                 sent,
             )
     if personal_service is not None and subscriptions:
-        index = personal_task_index(snapshot)
+        try:
+            index = personal_task_index(snapshot)
+        except Exception as exc:
+            await report(exc, "personal_task_index")
+            return
         for subscription in subscriptions:
             try:
                 chunks, _ = await personal_service.build(
@@ -123,10 +139,40 @@ async def run_daily_dispatch(
                 )
                 logger.info("Personal automatic dispatch user_id=%s sent=%s",
                             subscription.telegram_user_id, sent)
-            except Exception:
-                logger.exception("Personal automatic dispatch failed user_id=%s",
+            except Exception as exc:
+                await report(exc, "yougile_dispatch")
+                logger.error("Personal automatic dispatch failed user_id=%s",
                                  subscription.telegram_user_id)
+            finally:
+                if reminder_service is not None:
+                    try:
+                        await reminder_service.deliver(subscription.telegram_user_id, scheduled_date=dispatch_date)
+                    except Exception as exc:
+                        await report(exc, "personal_reminder_dispatch")
     logger.info("Automatic daily dispatch finished date=%s", dispatch_date)
+
+
+async def run_daily_dispatch(*, bot, session_factory, yougile, digest_service,
+                             personal_service=None, reminder_service=None, error_reporter=None):
+    dispatch_date = datetime.now(MOSCOW_TZ).date()
+    if dispatch_date.weekday() >= 5:
+        return
+    try:
+        await _run_yougile_dispatch(
+            bot=bot, session_factory=session_factory, yougile=yougile,
+            digest_service=digest_service, personal_service=personal_service,
+            reminder_service=reminder_service, error_reporter=error_reporter,
+        )
+    except Exception as exc:
+        if error_reporter is not None:
+            await error_reporter.report(exc, component="scheduler", operation="daily_dispatch")
+        else:
+            logger.error("Daily dispatch failed error=%s", type(exc).__name__)
+    finally:
+        # No subscriptions, unavailable YouGile, or a failed digest must never
+        # prevent local reminders. Successful per-user sends skip via their ledger.
+        if reminder_service is not None:
+            await reminder_service.deliver_remaining(dispatch_date)
 
 
 def create_scheduler(
@@ -136,6 +182,8 @@ def create_scheduler(
     yougile: YouGileClient,
     digest_service: DigestService,
     personal_service: PersonalDigestService | None = None,
+    reminder_service=None,
+    error_reporter=None,
 ) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
     scheduler.add_job(
@@ -147,6 +195,8 @@ def create_scheduler(
             "yougile": yougile,
             "digest_service": digest_service,
             "personal_service": personal_service,
+            "reminder_service": reminder_service,
+            "error_reporter": error_reporter,
         },
         id="daily-yougile-digest",
         replace_existing=True,
@@ -154,4 +204,10 @@ def create_scheduler(
         max_instances=1,
         misfire_grace_time=60,
     )
+    if reminder_service is not None:
+        scheduler.add_job(
+            reminder_service.cleanup_expired, "interval", minutes=1,
+            id="expire-reminder-edits", replace_existing=True, coalesce=True,
+            max_instances=1, next_run_time=datetime.now(MOSCOW_TZ),
+        )
     return scheduler

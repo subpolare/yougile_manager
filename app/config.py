@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     yougile_company_id: str
     yougile_api_key: SecretStr
     telegram_bot_token: SecretStr
+    openai_api_key: SecretStr | None = None
+    openai_transcription_model: str = "gpt-transcribe"
+    openai_reminder_model: str = "gpt-5.6-luna"
+    openai_error_model: str = "gpt-5.6-terra"
+    error_admin_telegram_user_id: int | None = None
     yougile_base_url: str = "https://yougile.com/api-v2"
 
     database_url: SecretStr | None = None

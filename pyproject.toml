@@ -10,6 +10,7 @@ dependencies = [
     "asyncmy>=0.2.10,<1",
     "cryptography>=46,<48",
     "httpx>=0.28,<1",
+    "openai>=2.54,<3",
     "pydantic-settings>=2.10,<3",
     "python-dotenv>=1.1,<2",
     "sqlalchemy[asyncio]>=2.0.43,<3",
