@@ -30,11 +30,11 @@ def personal_project_name(project: YouGileProject) -> str | None:
 
     title = project.title.strip()
     
-    if not title.startswith("#"):
+    if not title.startswith("#") and title != "ONLY Саша":
         return None
 
     title = title.split("/", 1)[0].strip()
-    
+
     if title.startswith("#"):
         title = title.split("/", 1)[0].strip()
         if EXCLUDED_WORDS.search(title):
