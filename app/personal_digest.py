@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+import os
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -192,7 +193,10 @@ class PersonalDigestService:
         if index is None:
             if snapshot is None:
                 snapshot = await self.yougile.fetch_workspace()
-            index = personal_task_index(snapshot)
+            index = personal_task_index(
+                snapshot,
+                sasha_yougile_user_id=os.environ["SASHA_YG"],
+            )
         today = today or datetime.now(MOSCOW_TZ).date()
         buckets = personal_buckets(index.get(user_id, ()), today)
         return format_personal_digest(
