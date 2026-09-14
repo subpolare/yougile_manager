@@ -42,24 +42,44 @@ def personal_project_name(project: YouGileProject) -> str | None:
     return title
 
 
-def personal_task_index(snapshot: WorkspaceSnapshot) -> Mapping[str, tuple[YouGileTask, ...]]:
+def personal_task_index(
+    snapshot: WorkspaceSnapshot,
+    *,
+    sasha_yougile_user_id: str,
+) -> Mapping[str, tuple[YouGileTask, ...]]:
     """Normalize each project once per snapshot, then index by own assignees."""
     by_user: dict[str, list[YouGileTask]] = defaultdict(list)
     seen: set[str] = set()
+
     for project in snapshot.projects:
         name = personal_project_name(project)
         if name is None:
             continue
+
+        is_sasha_project = project.title.strip() == "ONLY Саша"
+
         for task in snapshot.tasks_for_project(project.id):
             if task.id in seen:
                 continue
             seen.add(task.id)
+
             if task.completed or task.archived or task.deleted or task.deadline_ms is None:
                 continue
+
             item = replace(task, personal_project_title=name)
-            for uid in set(task.assigned):
+
+            recipients = set(task.assigned)
+
+            if is_sasha_project:
+                recipients.add(sasha_yougile_user_id)
+
+            for uid in recipients:
                 by_user[uid].append(item)
-    return MappingProxyType({uid: tuple(items) for uid, items in by_user.items()})
+
+    return MappingProxyType({
+        uid: tuple(items)
+        for uid, items in by_user.items()
+    })
 
 
 def personal_buckets(tasks: tuple[YouGileTask, ...], today: date) -> TaskBuckets:
