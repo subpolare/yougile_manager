@@ -97,25 +97,25 @@ async def test_openai_models_typed_output_reasoning_and_moscow_date(monkeypatch,
         model="gpt-transcribe", file=path, languages=["ru"], response_format="json")
     assert await ai.extract_reminder("завтра сделать") == "Сделать"
     kw = client.responses.parse.await_args.kwargs
-    assert kw["model"] == "gpt-5.6-luna"
+    assert kw["model"] == "gpt-5.6-terra"
     assert kw["reasoning"] == {"effort": "none"} and kw["store"] is False
     assert kw["text_format"] is ReminderExtraction
     assert all(s in kw["instructions"] for s in ["2026-09-14", "14 сентября 2026", "понедельник", "завтра", "через неделю"])
     assert kw["input"] == [{"role": "user", "content": "завтра сделать"}]
     await ai.explain_error("safe context")
     kw = client.responses.create.await_args.kwargs
-    assert kw["model"] == "gpt-5.6-terra"
+    assert kw["model"] == "gpt-5.6-sol"
     assert kw["reasoning"] == {"effort": "none"} and kw["store"] is False
     assert "tools" not in kw
 
 
 async def test_configured_models():
     client = sdk_client()
-    ai = OpenAIService(settings(openai_reminder_model="configured-luna", openai_error_model="configured-terra"), client)
+    ai = OpenAIService(settings(openai_reminder_model="configured-extraction", openai_error_model="configured-error"), client)
     await ai.extract_reminder("test")
     await ai.explain_error("safe")
-    assert client.responses.parse.await_args.kwargs["model"] == "configured-luna"
-    assert client.responses.create.await_args.kwargs["model"] == "configured-terra"
+    assert client.responses.parse.await_args.kwargs["model"] == "configured-extraction"
+    assert client.responses.create.await_args.kwargs["model"] == "configured-error"
     for call in (client.responses.parse, client.responses.create):
         assert call.await_args.kwargs["reasoning"] == {"effort": "none"}
 
@@ -385,7 +385,7 @@ async def test_scheduler_independent_of_subscriptions_and_yougile(service, monke
     yougile.fetch_workspace.return_value = WorkspaceSnapshot(boards=(), columns=(), tasks=(), users=())
     if yg_failure:
         yougile.fetch_workspace.side_effect = YouGileAPIError("down")
-    personal = NS(build=AsyncMock(return_value=(["digest"], None)))
+    personal = NS(build=AsyncMock(return_value=(["digest"], None)), task_index=lambda snapshot: {})
     kwargs = dict(bot=service.bot, session_factory=service.session_factory, yougile=yougile,
                   digest_service=None, personal_service=personal, reminder_service=service, error_reporter=service.errors)
     await run_daily_dispatch(**kwargs)
@@ -420,7 +420,7 @@ async def test_private_task_after_stop_repeat_weekends_failure(service, monkeypa
         events.append(kw["text"])
         return NS(message_id=len(events) + 100)
     service.bot.send_message.side_effect = send
-    personal = NS(build=AsyncMock(return_value=(["digest"], None)))
+    personal = NS(build=AsyncMock(return_value=(["digest"], None)), task_index=lambda snapshot: {})
     if yg_failure:
         personal.build.side_effect = YouGileAPIError("down")
     router = create_router(session_factory=service.session_factory, yougile=AsyncMock(), digest_service=None,
@@ -444,7 +444,7 @@ async def test_cleanup_schedule_is_persistent(service):
     assert str(trigger.timezone) == "Europe/Moscow"
 
 
-async def test_admin_terra_sanitized_and_fallback(database, caplog):
+async def test_admin_sol_sanitized_and_fallback(database, caplog):
     bot = AsyncMock()
     ai = NS(explain_error=AsyncMock(return_value="Не удалось создать напоминание."))
     reporter = ErrorReporter(bot, database[1], ai, admin_id=999, secrets=["yg-secret"])
@@ -460,7 +460,7 @@ async def test_admin_terra_sanitized_and_fallback(database, caplog):
     ai.explain_error.side_effect = ConnectionError(private)
     await reporter.report(original, component="voice_reminders", operation="transcribe_voice")
     alert = bot.send_message.await_args.kwargs["text"]
-    assert "RuntimeError" in alert and "ConnectionError" in alert and "Terra тоже не ответила" in alert
+    assert "RuntimeError" in alert and "ConnectionError" in alert and "Sol тоже не ответила" in alert
     assert ai.explain_error.await_count == 2
     bot.send_message.side_effect = RuntimeError(private)
     await reporter.report(original, component="voice_reminders", operation="transcribe_voice")
@@ -567,3 +567,21 @@ async def test_sdk_rejection_and_unusable_voice_report_classification(service):
     msg.answer.assert_awaited_with(VOICE_FAILURE)
     service.errors.report.assert_not_awaited()
     assert await rows(service, VoiceReminder) == []
+
+
+async def test_reporter_sdk_sol_failure_is_sanitized_terminal_fallback(database, caplog):
+    client = sdk_client()
+    client.responses.create.side_effect = ConnectionError('transcript=private-body token=secret-value')
+    bot = AsyncMock()
+    reporter = ErrorReporter(bot, database[1], OpenAIService(settings(), client), admin_id=999)
+    await reporter.report(RuntimeError('reminder=private-reminder password=db-secret'),
+                          component='voice_task_drafts', operation='draft_input')
+    client.responses.create.assert_awaited_once()
+    options = client.responses.create.await_args.kwargs
+    assert options['model'] == 'gpt-5.6-sol'
+    assert options['reasoning'] == {'effort': 'none'} and options['store'] is False
+    bot.send_message.assert_awaited_once()
+    alert = bot.send_message.await_args.kwargs['text']
+    assert 'Sol тоже не ответила' in alert and 'Terra' not in alert
+    for secret in ('private-body', 'secret-value', 'private-reminder', 'db-secret'):
+        assert secret not in options['input'] and secret not in alert and secret not in caplog.text

@@ -32,7 +32,9 @@ class API:
         self.posts.append((path, value))
         key = value['idempotencyKey']
         if key not in self.keys:
-            self.keys[key] = 'c' if path == '/columns' else 'task-id'
+            self.keys[key] = {'/columns': 'c', '/projects': 'p', '/boards': 'b', '/tasks': 'task-id'}[path]
+            if path in ('/projects', '/boards'):
+                getattr(self, path[1:]).append({'id': self.keys[key], **value})
             if path == '/columns':
                 self.columns.append({'id': 'c', 'boardId': value['boardId'], 'title': value['title']})
             if self.fail_after_creation:
@@ -41,7 +43,7 @@ class API:
         return httpx.Response(201, json={'id': self.keys[key]})
 
 
-@pytest.fixture(params=["ONLY Саша", "ONLY Влад"], autouse=True)
+@pytest.fixture(params=["ONLY Саша", "ONLY Влад", "ONLY Костя"], autouse=True)
 def destination(request, monkeypatch):
     monkeypatch.setattr(API, "project_title", request.param)
 
@@ -148,3 +150,58 @@ async def test_malformed_success_is_not_accepted():
     async with http:
         with pytest.raises(YouGileDataError):
             await yg.create_voice_task(project_title=api.project_title, title='Test', deadline=date(2026, 9, 17), idempotency_key='key')
+
+
+@pytest.mark.parametrize('missing', ['project', 'board', 'column', 'nothing'])
+async def test_explicit_setup_creates_only_missing_empty_entities_and_restart_reuses(missing):
+    api = API(existing=missing == 'nothing')
+    if missing == 'project':
+        api.projects = []
+    if missing in ('project', 'board'):
+        api.boards = []
+    yg, http, _ = client(api)
+    async with http:
+        assert await asyncio.gather(*[yg.ensure_voice_task_destination(api.project_title, owner_id='owner')
+                                      for _ in range(2)]) == ['c', 'c']
+    expected = {'project': ['/projects', '/boards', '/columns'], 'board': ['/boards', '/columns'],
+                'column': ['/columns'], 'nothing': []}[missing]
+    assert [path for path, _ in api.posts] == expected
+    for path, payload in api.posts:
+        assert 'idempotencyKey' in payload
+        if path == '/projects':
+            assert set(payload) == {'title', 'users', 'idempotencyKey'}
+            assert payload['title'] == api.project_title and payload['users'] == {'owner': 'admin'}
+        elif path == '/boards':
+            assert set(payload) == {'title', 'projectId', 'idempotencyKey'}
+            assert payload['title'] == 'Задачи от бота'
+    restarted, http, _ = client(api)
+    async with http:
+        assert await restarted.ensure_voice_task_destination(api.project_title, owner_id='owner') == 'c'
+        assert await restarted.resolve_voice_task_column(api.project_title) == 'c'
+    assert [path for path, _ in api.posts] == expected
+
+
+@pytest.mark.parametrize('missing', ['project', 'board', 'column'])
+async def test_setup_lost_response_reuses_server_idempotency_key(monkeypatch, missing):
+    api = API(existing=False)
+    if missing == 'project':
+        api.projects = []
+    if missing in ('project', 'board'):
+        api.boards = []
+    api.fail_after_creation = True
+    monkeypatch.setattr('app.yougile.asyncio.sleep', AsyncMock())
+    yg, http, _ = client(api)
+    async with http:
+        assert await yg.ensure_voice_task_destination(api.project_title, owner_id='owner') == 'c'
+    assert len(api.projects) == len(api.boards) == len(api.columns) == 1
+    assert api.posts[0] == api.posts[1]
+
+
+async def test_setup_duplicate_project_fails_without_mutation():
+    api = API(existing=False)
+    api.projects.append({'id': 'duplicate', 'title': api.project_title})
+    yg, http, _ = client(api)
+    async with http:
+        with pytest.raises(YouGileDataError):
+            await yg.ensure_voice_task_destination(api.project_title, owner_id='owner')
+    assert not api.posts

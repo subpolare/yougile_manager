@@ -35,7 +35,7 @@ async def test_daily_greeting_persists_restarts_dates_and_concurrent_first_reque
 
 
 def freeze_day(monkeypatch, value):
-    class Clock:
+    class Clock(datetime):
         @staticmethod
         def now(tz):
             return datetime.combine(value, datetime.min.time(), tzinfo=tz).replace(hour=12)

@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import (SessionFactory, dispatch_once, list_bindings,
                     list_personal_subscriptions, dispatch_personal_once)
-from app.personal_digest import PersonalDigestService, personal_task_index
+from app.personal_digest import PersonalDigestService
 from app.task_service import DigestService, MOSCOW_TZ
 from app.yougile import YouGileClient, YouGileError
 
@@ -117,7 +117,7 @@ async def _run_yougile_dispatch(
             )
     if personal_service is not None and subscriptions:
         try:
-            index = personal_task_index(snapshot)
+            index = personal_service.task_index(snapshot)
         except Exception as exc:
             await report(exc, "personal_task_index")
             return

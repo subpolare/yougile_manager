@@ -49,7 +49,7 @@ async def clean(drafts, uid):
         await session.execute(delete(VoiceTaskDraft).where(VoiceTaskDraft.telegram_user_id==uid))
 
 
-@pytest.mark.parametrize("employee", ["SASHA", "VLAD"])
+@pytest.mark.parametrize("employee", ["SASHA", "VLAD", "KOSTYA"])
 async def test_mysql_two_engines_double_post_and_physical_cascade(mysql_services, employee):
     first, second, uid, _ = mysql_services
     a, b = setup(first, second, employee)
@@ -64,7 +64,7 @@ async def test_mysql_two_engines_double_post_and_physical_cascade(mysql_services
         await clean(a, uid)
 
 
-@pytest.mark.parametrize('employee', ['SASHA', 'VLAD'])
+@pytest.mark.parametrize('employee', ['SASHA', 'VLAD', 'KOSTYA'])
 @pytest.mark.parametrize('action', ['text', 'delete', 'edit'])
 async def test_mysql_restart_expiration_races(mysql_services, action, employee):
     first, second, uid, _ = mysql_services

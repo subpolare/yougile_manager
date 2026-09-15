@@ -21,7 +21,7 @@ TITLE = "Собрать референсы для обложки"
 DEADLINE = date(2026, 9, 17)
 
 
-@pytest.fixture(params=["SASHA", "VLAD"])
+@pytest.fixture(params=["SASHA", "VLAD", "KOSTYA"])
 def drafts(service, request):
     identity = PersonalIdentity(service.session_factory, {UID: "@some_user", "other": "@another_user"},
                                 voice_task_employees={request.param: "@some_user"})
@@ -29,7 +29,7 @@ def drafts(service, request):
         return_value=YouGileTaskExtraction(title=TITLE, deadline=DEADLINE))
     yg = NS(create_voice_task=AsyncMock(return_value="task-id"))
     drafts = VoiceTaskDraftService(service, identity, yg)
-    drafts.expected_project = {"SASHA": "ONLY Саша", "VLAD": "ONLY Влад"}[request.param]
+    drafts.expected_project = {"SASHA": "ONLY Саша", "VLAD": "ONLY Влад", "KOSTYA": "ONLY Костя"}[request.param]
     service.task_drafts = drafts
     return drafts
 
@@ -71,7 +71,7 @@ async def test_extractor_schema_moscow_reasoning_none(monkeypatch):
     result = await OpenAIService(settings(), client).extract_yougile_task("До четверга собрать референсы для обложки")
     assert result.title == TITLE and result.deadline == DEADLINE
     kw = client.responses.parse.await_args.kwargs
-    assert kw['model'] == 'gpt-5.6-luna' and kw['reasoning'] == {'effort': 'none'} and kw['store'] is False
+    assert kw['model'] == 'gpt-5.6-terra' and kw['reasoning'] == {'effort': 'none'} and kw['store'] is False
     assert '2026-09-15' in kw['instructions'] and 'вторник' in kw['instructions']
     assert kw['text_format'] is YouGileTaskExtraction
     assert set(YouGileTaskExtraction.model_fields) == {'title', 'deadline'}
@@ -405,20 +405,20 @@ async def test_valid_input_wins_cleanup_race_before_expiration(drafts):
     drafts.reminders.errors.report.assert_not_awaited()
 
 
-@pytest.mark.parametrize('actor', ['SASHA', 'VLAD'])
+@pytest.mark.parametrize('actor', ['SASHA', 'VLAD', 'KOSTYA'])
 @pytest.mark.parametrize('action', ['yg', 'local', 'edit', 'delete'])
 async def test_two_enabled_owners_cannot_act_on_each_others_drafts(service, actor, action):
-    identity = PersonalIdentity(service.session_factory, {UID: '@sasha_test', 'vlad-yg': '@vlad_test'},
-                                voice_task_employees={'SASHA': '@sasha_test', 'VLAD': '@vlad_test'})
+    identity = PersonalIdentity(service.session_factory, {UID: '@sasha_test', 'vlad-yg': '@vlad_test', 'kostya-yg': '@kostya_test'},
+                                voice_task_employees={'SASHA': '@sasha_test', 'VLAD': '@vlad_test', 'KOSTYA': '@kostya_test'})
     service.openai.extract_yougile_task = AsyncMock(return_value=YouGileTaskExtraction(title=TITLE, deadline=DEADLINE))
     yg = NS(create_voice_task=AsyncMock(return_value='task-id'))
     shared = VoiceTaskDraftService(service, identity, yg)
-    ids = {'SASHA': 42, 'VLAD': 44}
+    ids = {'SASHA': 42, 'VLAD': 44, 'KOSTYA': 46}
     messages = {}
     owned = {}
     for role, user_id in ids.items():
         msg = message(user=user_id)
-        msg.from_user.username = {'SASHA': 'sasha_test', 'VLAD': 'vlad_test'}[role]
+        msg.from_user.username = {'SASHA': 'sasha_test', 'VLAD': 'vlad_test', 'KOSTYA': 'kostya_test'}[role]
         await identity.resolve(user_id, msg.from_user.username, action='start')
         owned[role] = await shared.create_from_voice(msg)
         messages[role] = msg
@@ -427,7 +427,7 @@ async def test_two_enabled_owners_cannot_act_on_each_others_drafts(service, acto
     tap.from_user.username = 'recycled_or_changed'
     await shared.callback(tap)
     tap.answer.assert_awaited_once_with(STALE)
-    assert len(await rows(shared, VoiceTaskDraft)) == 2
+    assert len(await rows(shared, VoiceTaskDraft)) == 3
     assert not await rows(shared, VoiceTaskDraftSession)
     yg.create_voice_task.assert_not_awaited()
     # Destination cannot be injected, even for one's own draft.
@@ -438,19 +438,48 @@ async def test_two_enabled_owners_cannot_act_on_each_others_drafts(service, acto
     yg.create_voice_task.assert_not_awaited()
     # Bound numeric identity wins over current username; server supplies the project.
     await shared.callback(cb(owned[actor], 'yg', user=ids[actor]))
-    assert yg.create_voice_task.await_args.kwargs['project_title'] == {'SASHA': 'ONLY Саша', 'VLAD': 'ONLY Влад'}[actor]
-    assert {d.id for d in await rows(shared, VoiceTaskDraft)} == {owned[other].id}
+    assert yg.create_voice_task.await_args.kwargs['project_title'] == {'SASHA': 'ONLY Саша', 'VLAD': 'ONLY Влад', 'KOSTYA': 'ONLY Костя'}[actor]
+    assert {d.id for d in await rows(shared, VoiceTaskDraft)} == {d.id for role, d in owned.items() if role != actor}
     service.errors.report.assert_not_awaited()
 
 
 async def test_configured_roles_fail_closed_on_collisions_or_unknown_roles(service):
     from app.config import VOICE_TASK_PROJECTS
-    assert settings(sasha_tg='@sasha_test', vlad_tg='@vlad_test').voice_task_employees == {
-        'SASHA': '@sasha_test', 'VLAD': '@vlad_test'}
-    assert VOICE_TASK_PROJECTS == {'SASHA': 'ONLY Саша', 'VLAD': 'ONLY Влад'}
+    assert settings(sasha_tg='@sasha_test', vlad_tg='@vlad_test', kostya_tg='@kostya_test').voice_task_employees == {
+        'SASHA': '@sasha_test', 'VLAD': '@vlad_test', 'KOSTYA': '@kostya_test'}
+    assert VOICE_TASK_PROJECTS == {'SASHA': 'ONLY Саша', 'VLAD': 'ONLY Влад', 'KOSTYA': 'ONLY Костя'}
     identity = PersonalIdentity(service.session_factory, {UID: '@same_user'},
         voice_task_employees={'SASHA': '@same_user', 'VLAD': '@same_user'})
     assert await identity.voice_task_project(42, 'same_user') is None
     identity = PersonalIdentity(service.session_factory, {UID: '@same_user'},
         voice_task_employees={'OTHER': '@same_user'})
     assert await identity.voice_task_project(42, 'same_user') is None
+
+
+async def test_all_employee_voice_and_edit_paths_call_terra_with_reasoning_none(drafts):
+    client = sdk_client()
+    client.responses.parse.return_value = NS(output_parsed=YouGileTaskExtraction(title=TITLE, deadline=DEADLINE))
+    ai = OpenAIService(settings(), client)
+    drafts.openai = drafts.reminders.openai = ai
+    draft = await drafts.create_from_voice(message())
+    client.audio.transcriptions.create.assert_awaited_once()
+    assert client.audio.transcriptions.create.await_args.kwargs['model'] == 'gpt-transcribe'
+    await drafts.callback(cb(draft, 'edit'))
+    assert await drafts.replace_text(message(text='Собрать референсы в следующую пятницу'))
+    assert client.responses.parse.await_count == 2
+    for call in client.responses.parse.await_args_list:
+        assert call.kwargs['model'] == 'gpt-5.6-terra'
+        assert call.kwargs['reasoning'] == {'effort': 'none'}
+        assert call.kwargs['store'] is False
+        assert call.kwargs['text_format'] is YouGileTaskExtraction
+    assert len(buttons(drafts.bot)) == 4
+    drafts.yougile.create_voice_task.assert_not_awaited()
+
+
+async def test_task_extraction_respects_same_configured_model_as_reminders():
+    client = sdk_client()
+    client.responses.parse.return_value = NS(output_parsed=YouGileTaskExtraction(title=TITLE, deadline=DEADLINE))
+    await OpenAIService(settings(openai_reminder_model='configured-extraction'), client).extract_yougile_task('test')
+    assert client.responses.parse.await_args.kwargs['model'] == 'configured-extraction'
+    assert client.responses.parse.await_args.kwargs['reasoning'] == {'effort': 'none'}
+    assert client.responses.parse.await_args.kwargs['store'] is False

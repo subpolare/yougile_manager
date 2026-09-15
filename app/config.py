@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 TELEGRAM_USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
-VOICE_TASK_PROJECTS = {"SASHA": "ONLY Саша", "VLAD": "ONLY Влад"}
+VOICE_TASK_PROJECTS = {"SASHA": "ONLY Саша", "VLAD": "ONLY Влад", "KOSTYA": "ONLY Костя"}
 
 
 def parse_employee_mappings(values: Mapping[str, object]) -> dict[str, str]:
@@ -59,11 +59,12 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr
     openai_api_key: SecretStr | None = None
     openai_transcription_model: str = "gpt-transcribe"
-    openai_reminder_model: str = "gpt-5.6-luna"
-    openai_error_model: str = "gpt-5.6-terra"
+    openai_reminder_model: str = "gpt-5.6-terra"
+    openai_error_model: str = "gpt-5.6-sol"
     error_admin_telegram_user_id: int | None = None
     sasha_tg: str | None = None
     vlad_tg: str | None = None
+    kostya_tg: str | None = None
     yougile_base_url: str = "https://yougile.com/api-v2"
 
     database_url: SecretStr | None = None

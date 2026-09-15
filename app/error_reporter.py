@@ -124,12 +124,12 @@ class ErrorReporter:
             explanation = self.sanitizer.clean(await self.openai.explain_error(context))
             alert = (f"🚨 Ошибка в боте\n\n{explanation}\n\n"
                      f"Компонент: {component}\nОшибка: {type(exc).__name__}\nОперация: {operation}")
-        except Exception as terra_exc:
-            terra = self.sanitizer.exception(terra_exc)
-            logger.error("Terra explanation failed: %s", terra)
+        except Exception as sol_exc:
+            sol = self.sanitizer.exception(sol_exc)
+            logger.error("Sol explanation failed: %s", sol)
             alert = (f"🚨 Ошибка в боте\n\nОсновная ошибка:\n{original}\n"
                      f"Компонент: {component}\nОперация: {operation}\n\n"
-                     f"⚠️ Terra тоже не ответила:\n{terra}\n\n"
+                     f"⚠️ Sol тоже не ответила:\n{sol}\n\n"
                      "Поэтому автоматическое пояснение ошибки недоступно.")
         try:
             admin_id = await self.resolve_admin()

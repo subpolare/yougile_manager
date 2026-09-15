@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import html
 import re
-import os
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -25,13 +24,18 @@ FOOTER = "<blockquote><i>Если захочешь отменить этот д�
 EMPTY = "На сегодня и до конца недели у тебя задач с дедлайнами нет 🎉"
 
 
-def personal_project_name(project: YouGileProject) -> str | None:
-    if project.deleted:
+def personal_project_name(
+    project: YouGileProject, *, own_project_title: str | None = None,
+) -> str | None:
+    if project.deleted or project.archived:
         return None
 
     title = project.title.strip()
-    
-    if not title.startswith("#") and title != "ONLY Саша":
+    # ONLY projects are private even when tasks have other assignees.
+    if title.startswith("ONLY "):
+        return title if title == own_project_title else None
+
+    if not title.startswith("#"):
         return None
 
     title = title.split("/", 1)[0].strip()
@@ -46,42 +50,35 @@ def personal_project_name(project: YouGileProject) -> str | None:
 def personal_task_index(
     snapshot: WorkspaceSnapshot,
     *,
-    sasha_yougile_user_id: str | None = None,
+    own_projects: Mapping[str, str] | None = None,
 ) -> Mapping[str, tuple[YouGileTask, ...]]:
-    """Normalize each project once per snapshot, then index by own assignees."""
+    """Index ordinary tasks by assignee and private ONLY tasks by project owner."""
     by_user: dict[str, list[YouGileTask]] = defaultdict(list)
     seen: set[str] = set()
-    sasha_yougile_user_id = sasha_yougile_user_id or os.getenv("SASHA_YG")
+    owners: dict[str, set[str]] = defaultdict(set)
+    for uid, title in (own_projects or {}).items():
+        owners[title].add(uid)
 
     for project in snapshot.projects:
-        name = personal_project_name(project)
+        title = project.title.strip()
+        # Ambiguous ownership fails closed instead of sharing personal content.
+        candidates = owners.get(title, set())
+        owner = next(iter(candidates)) if len(candidates) == 1 else None
+        name = personal_project_name(project, own_project_title=title if owner else None)
         if name is None:
             continue
-
-        is_sasha_project = project.title.strip() == "ONLY Саша"
-
-        for task in snapshot.tasks_for_project(project.id):
+        for task in snapshot.tasks_for_project(project.id, exclude_archived_hierarchy=True):
             if task.id in seen:
                 continue
             seen.add(task.id)
-
             if task.completed or task.archived or task.deleted or task.deadline_ms is None:
                 continue
-
             item = replace(task, personal_project_title=name)
-
-            recipients = set(task.assigned)
-
-            if is_sasha_project and sasha_yougile_user_id:
-                recipients.add(sasha_yougile_user_id)
-
+            # Project ownership includes unassigned tasks, but never adds outsiders.
+            recipients = {owner} if title.startswith("ONLY ") else set(task.assigned)
             for uid in recipients:
                 by_user[uid].append(item)
-
-    return MappingProxyType({
-        uid: tuple(items)
-        for uid, items in by_user.items()
-    })
+    return MappingProxyType({uid: tuple(items) for uid, items in by_user.items()})
 
 
 def personal_buckets(tasks: tuple[YouGileTask, ...], today: date) -> TaskBuckets:
@@ -182,9 +179,14 @@ def format_personal_digest(
 
 
 class PersonalDigestService:
-    def __init__(self, yougile_client: YouGileClient, greeting_provider: DailyGreetingProvider) -> None:
+    def __init__(self, yougile_client: YouGileClient, greeting_provider: DailyGreetingProvider,
+                 *, own_projects: Mapping[str, str] | None = None) -> None:
         self.yougile = yougile_client
         self.greetings = greeting_provider
+        self.own_projects = dict(own_projects or {})
+
+    def task_index(self, snapshot: WorkspaceSnapshot):
+        return personal_task_index(snapshot, own_projects=self.own_projects)
 
     async def build(
         self, user_id: str, *, snapshot: WorkspaceSnapshot | None = None,
@@ -194,10 +196,7 @@ class PersonalDigestService:
         if index is None:
             if snapshot is None:
                 snapshot = await self.yougile.fetch_workspace()
-            index = personal_task_index(
-                snapshot,
-                sasha_yougile_user_id=os.getenv("SASHA_YG"),
-            )
+            index = self.task_index(snapshot)
         today = today or datetime.now(MOSCOW_TZ).date()
         buckets = personal_buckets(index.get(user_id, ()), today)
         return format_personal_digest(

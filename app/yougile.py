@@ -36,6 +36,7 @@ class YouGileProject:
     id: str
     title: str
     deleted: bool = False
+    archived: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,7 @@ class YouGileBoard:
     title: str = ""
     display_order: int = 0
     deleted: bool = False
+    archived: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +62,7 @@ class YouGileColumn:
     title: str = ""
     display_order: int = 0
     deleted: bool = False
+    archived: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,16 +93,19 @@ class WorkspaceSnapshot:
     users: tuple[YouGileUser, ...]
     projects: tuple[YouGileProject, ...] = ()
 
-    def tasks_for_project(self, project_id: str) -> tuple[YouGileTask, ...]:
+    def tasks_for_project(self, project_id: str, *,
+                          exclude_archived_hierarchy: bool = False) -> tuple[YouGileTask, ...]:
         boards_by_id = {
             board.id: board
             for board in self.boards
             if board.project_id == project_id and not board.deleted
+            and not (exclude_archived_hierarchy and board.archived)
         }
         columns_by_id = {
             column.id: column
             for column in self.columns
             if column.board_id in boards_by_id and not column.deleted
+            and not (exclude_archived_hierarchy and column.archived)
         }
         tasks_by_id = {task.id: task for task in self.tasks}
         referenced_ids = {
@@ -310,6 +316,45 @@ class YouGileClient:
         rows = await self._paginate("/projects", params={"includeDeleted": False})
         return [_parse_project(row) for row in rows]
 
+    async def ensure_voice_task_destination(self, project_title: str, *, owner_id: str) -> str:
+        """Explicit setup only: create missing empty hierarchy, never copy content.
+
+        CreateProjectDto/CreateBoardDto document idempotencyKey in api-json.
+        Runtime callbacks continue to resolve existing projects without creating them.
+        """
+        async with self._voice_destination_lock:
+            async def matching_projects():
+                return [r for r in await self._paginate("/projects", params={"includeDeleted": False})
+                        if self._active(r) and r.get("title", "").strip() == project_title]
+
+            projects = await matching_projects()
+            if not projects:
+                created = await self._request_json("/projects", {}, method="POST", body={
+                    "title": project_title, "users": {owner_id: "admin"},
+                    "idempotencyKey": str(uuid5(NAMESPACE_URL, f"yougile-bot:voice-project:{project_title}")),
+                })
+                projects = await matching_projects()
+                if len(projects) != 1 or projects[0].get("id") != _required_string(created, "id", "project"):
+                    raise YouGileDataError("Created voice task project could not be verified")
+            if len(projects) != 1:
+                raise YouGileDataError("Expected exactly one active voice task project")
+            project_id = _required_string(projects[0], "id", "project")
+
+            async def active_boards():
+                return [r for r in await self._paginate("/boards", params={"includeDeleted": False})
+                        if self._active(r) and r.get("projectId") == project_id]
+
+            boards = await active_boards()
+            if not boards:
+                created = await self._request_json("/boards", {}, method="POST", body={
+                    "title": "Задачи от бота", "projectId": project_id,
+                    "idempotencyKey": str(uuid5(NAMESPACE_URL, f"yougile-bot:voice-board:{project_id}")),
+                })
+                boards = await active_boards()
+                if len(boards) != 1 or boards[0].get("id") != _required_string(created, "id", "board"):
+                    raise YouGileDataError("Created voice task board could not be verified")
+        return await self.resolve_voice_task_column(project_title)
+
     async def resolve_voice_task_column(self, project_title: str) -> str:
         """Exact active hierarchy only. Server idempotency also covers other processes.
 
@@ -435,6 +480,7 @@ def _parse_project(row: Mapping[str, Any]) -> YouGileProject:
         id=_required_string(row, "id", "project"),
         title=_required_string(row, "title", "project"),
         deleted=_optional_bool(row, "deleted"),
+        archived=_optional_bool(row, "archived"),
     )
 
 
@@ -452,6 +498,7 @@ def _parse_board(row: Mapping[str, Any], *, display_order: int = 0) -> YouGileBo
         title=_required_string(row, "title", "board"),
         display_order=display_order,
         deleted=_optional_bool(row, "deleted"),
+        archived=_optional_bool(row, "archived"),
     )
 
 
@@ -462,6 +509,7 @@ def _parse_column(row: Mapping[str, Any], *, display_order: int = 0) -> YouGileC
         title=_required_string(row, "title", "column"),
         display_order=display_order,
         deleted=_optional_bool(row, "deleted"),
+        archived=_optional_bool(row, "archived"),
     )
 
 
