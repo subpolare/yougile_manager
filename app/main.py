@@ -79,7 +79,8 @@ async def run() -> None:
         digest_service = DigestService(yougile, mappings, greetings)
         personal_service = PersonalDigestService(yougile, greetings)
         reminders = ReminderService(session_factory, bot, openai_service, reporter)
-        identity = PersonalIdentity(session_factory, mappings, sasha_tg=settings.sasha_tg)
+        identity = PersonalIdentity(session_factory, mappings,
+                                    voice_task_employees=settings.voice_task_employees)
         reminders.task_drafts = VoiceTaskDraftService(reminders, identity, yougile)
         dispatcher = Dispatcher()
         dispatcher.include_router(create_router(

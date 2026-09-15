@@ -86,10 +86,6 @@ async def test_init_typing_starts_after_validation_and_covers_external_work(monk
     events: list[str] = []
     message = fake_message(events)
 
-    async def is_admin(*_: object) -> bool:
-        events.append("admin-validation")
-        return True
-
     async def fetch_projects() -> list[YouGileProject]:
         events.append("yougile")
         return [YouGileProject(id="project", title="#7 Project")]
@@ -101,7 +97,6 @@ async def test_init_typing_starts_after_validation_and_covers_external_work(monk
         events.append("typing-created")
         return RecordingActionContext(events)
 
-    monkeypatch.setattr("app.telegram_handlers._is_admin", is_admin)
     monkeypatch.setattr("app.telegram_handlers.replace_binding", replace_binding)
     monkeypatch.setattr("app.telegram_handlers.ChatActionSender.typing", typing)
     router = create_router(
@@ -117,7 +112,6 @@ async def test_init_typing_starts_after_validation_and_covers_external_work(monk
     )
 
     assert events == [
-        "admin-validation",
         "typing-created",
         "typing-enter",
         "yougile",
@@ -148,3 +142,63 @@ async def test_status_does_not_start_typing(monkeypatch) -> None:
 
     get_binding.assert_awaited_once()
     assert events == ["answer"]
+
+
+import pytest
+from app.db import get_binding, replace_binding as save_binding
+
+
+@pytest.mark.parametrize('member_status', ['member', 'administrator', 'creator'])
+@pytest.mark.parametrize('chat_type', [ChatType.GROUP, ChatType.SUPERGROUP])
+@pytest.mark.parametrize('argument', ['7', '#7 Project'])
+async def test_init_any_member_moves_existing_binding_without_admin_lookup(
+        database, monkeypatch, member_status, chat_type, argument):
+    factory = database[1]
+    await save_binding(factory, chat_id=-1002, project_id='p7', project_number=7, project_title='#7 Project')
+    await save_binding(factory, chat_id=-1001, project_id='old', project_number=8, project_title='#8 Old')
+    msg = fake_message([])
+    msg.chat.type = chat_type
+    bot = AsyncMock()
+    bot.get_chat_member.return_value = SimpleNamespace(status=member_status)
+    monkeypatch.setattr('app.telegram_handlers.ChatActionSender.typing', lambda **_: RecordingActionContext([]))
+    router = create_router(session_factory=factory, yougile=SimpleNamespace(fetch_projects=AsyncMock(
+        return_value=[YouGileProject('p7', '#7 Project'), YouGileProject('p70', '#70 Other')])),
+        digest_service=SimpleNamespace())
+    await command_handler(router, 'initialize')(msg, SimpleNamespace(args=argument), bot)
+    bot.get_chat_member.assert_not_awaited()
+    bot.get_chat_administrators.assert_not_awaited()
+    assert await get_binding(factory, -1002) is None
+    row = await get_binding(factory, -1001)
+    assert (row.yougile_project_id, row.project_number, row.project_title) == ('p7', 7, '#7 Project')
+    msg.answer.assert_awaited_once_with('Готово! Связал этот чат (ID: -1001) с проектом #7 Project в YouGile. '
+                                        'Теперь буду спамить вам уведомлениями о задачах, вам (не) понравится')
+
+
+@pytest.mark.parametrize('argument,titles', [
+    ('', ['#7 Project']), ('7', ['#7 First', '#7 Second']),
+    ('7', ['#70 Other', '#7suffix', 'Project #7']),
+    ('#7 Proj', ['#7 Project']), ('5', ['#5 Голова компании']),
+    ('#7 Same', ['#7 Same', '#7 Same']), ('7foo', ['#7 Project']),
+])
+async def test_invalid_init_by_member_preserves_existing_binding(database, monkeypatch, argument, titles):
+    factory = database[1]
+    await save_binding(factory, chat_id=-1001, project_id='old', project_number=8, project_title='#8 Old')
+    bot = AsyncMock()
+    monkeypatch.setattr('app.telegram_handlers.ChatActionSender.typing', lambda **_: RecordingActionContext([]))
+    router = create_router(session_factory=factory, yougile=SimpleNamespace(fetch_projects=AsyncMock(
+        return_value=[YouGileProject(str(i), title) for i, title in enumerate(titles)])), digest_service=SimpleNamespace())
+    await command_handler(router, 'initialize')(fake_message([]), SimpleNamespace(args=argument), bot)
+    assert (await get_binding(factory, -1001)).yougile_project_id == 'old'
+    bot.get_chat_member.assert_not_awaited()
+
+
+async def test_init_private_still_rejected_without_api_calls(database):
+    msg = fake_message([])
+    msg.chat.type = ChatType.PRIVATE
+    bot, yg = AsyncMock(), AsyncMock()
+    router = create_router(session_factory=database[1], yougile=yg, digest_service=SimpleNamespace())
+    await command_handler(router, 'initialize')(msg, SimpleNamespace(args='7'), bot)
+    msg.answer.assert_awaited_once_with('Эта команда работает только в групповых чатах.')
+    yg.fetch_projects.assert_not_awaited()
+    bot.get_chat_member.assert_not_awaited()
+    assert await get_binding(database[1], -1001) is None

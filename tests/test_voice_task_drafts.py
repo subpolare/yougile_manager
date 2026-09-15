@@ -21,14 +21,15 @@ TITLE = "Собрать референсы для обложки"
 DEADLINE = date(2026, 9, 17)
 
 
-@pytest.fixture
-def drafts(service):
+@pytest.fixture(params=["SASHA", "VLAD"])
+def drafts(service, request):
     identity = PersonalIdentity(service.session_factory, {UID: "@some_user", "other": "@another_user"},
-                                sasha_tg="@some_user")
+                                voice_task_employees={request.param: "@some_user"})
     service.openai.extract_yougile_task = AsyncMock(
         return_value=YouGileTaskExtraction(title=TITLE, deadline=DEADLINE))
-    yg = NS(create_sasha_task=AsyncMock(return_value="task-id"))
+    yg = NS(create_voice_task=AsyncMock(return_value="task-id"))
     drafts = VoiceTaskDraftService(service, identity, yg)
+    drafts.expected_project = {"SASHA": "ONLY Саша", "VLAD": "ONLY Влад"}[request.param]
     service.task_drafts = drafts
     return drafts
 
@@ -80,7 +81,7 @@ async def test_extractor_schema_moscow_reasoning_none(monkeypatch):
         await OpenAIService(settings(), client).extract_yougile_task('test')
 
 
-async def test_sasha_private_voice_new_flow_and_original_reply(drafts):
+async def test_enabled_private_voice_new_flow_and_original_reply(drafts):
     router = create_reminder_router(drafts.reminders, drafts.identity)
     await command_handler(router, 'voice')(message())
     assert len(await rows(drafts, VoiceTaskDraft)) == 1
@@ -91,7 +92,7 @@ async def test_sasha_private_voice_new_flow_and_original_reply(drafts):
     assert buttons(drafts.bot) == ['✅ В YouGile', '📝 Напомнить тут', '✍️ Изменить', '❌ Удалить']
     for row in kw['reply_markup'].inline_keyboard:
         assert all(b.callback_data.startswith('vd:') and len(b.callback_data.split(':')) == 3 for b in row)
-    drafts.yougile.create_sasha_task.assert_not_awaited()
+    drafts.yougile.create_voice_task.assert_not_awaited()
     drafts.openai.extract_reminder.assert_not_awaited()
 
 
@@ -130,7 +131,7 @@ async def test_missing_deadline_is_persistent_inactive_and_no_keyboard(drafts):
     assert drafts.bot.send_message.await_args.kwargs['text'] == MISSING_DEADLINE
     assert 'reply_markup' not in drafts.bot.send_message.await_args.kwargs
     assert not await rows(drafts, VoiceReminder)
-    drafts.yougile.create_sasha_task.assert_not_awaited()
+    drafts.yougile.create_voice_task.assert_not_awaited()
     drafts.bot.send_message.reset_mock()
     await drafts.reminders.deliver(42)
     drafts.bot.send_message.assert_not_awaited()
@@ -147,7 +148,7 @@ async def test_invalid_manual_date_preserves_original_window(drafts, value):
     assert (await rows(drafts, VoiceTaskDraft))[0].deadline_date is None
     assert drafts.openai.extract_yougile_task.await_count == 1
     assert not await rows(drafts, VoiceReminder)
-    drafts.yougile.create_sasha_task.assert_not_awaited()
+    drafts.yougile.create_voice_task.assert_not_awaited()
 
 
 async def test_valid_manual_date_after_restart_closes_session(drafts):
@@ -174,12 +175,12 @@ async def test_success_double_callback_deletes_only_after_post(drafts):
     draft = await create(drafts)
     async def post(**kw):
         assert len(await rows(drafts, VoiceTaskDraft)) == 1
-        assert kw == dict(title=TITLE, deadline=DEADLINE, idempotency_key=draft.idempotency_key)
+        assert kw == dict(project_title=drafts.expected_project, title=TITLE, deadline=DEADLINE, idempotency_key=draft.idempotency_key)
         return 'created-task'
-    drafts.yougile.create_sasha_task.side_effect = post
+    drafts.yougile.create_voice_task.side_effect = post
     first, second = cb(draft, 'yg'), cb(draft, 'yg')
     await asyncio.gather(drafts.callback(first), drafts.callback(second))
-    drafts.yougile.create_sasha_task.assert_awaited_once()
+    drafts.yougile.create_voice_task.assert_awaited_once()
     assert not await rows(drafts, VoiceTaskDraft)
     assert not await rows(drafts, VoiceTaskDraftSession)
     assert not await rows(drafts, VoiceReminder)
@@ -191,7 +192,7 @@ async def test_success_double_callback_deletes_only_after_post(drafts):
 
 async def test_failed_post_preserves_data_and_key_retry_succeeds(drafts):
     draft = await create(drafts)
-    drafts.yougile.create_sasha_task.side_effect = YouGileAPIError('sensitive body')
+    drafts.yougile.create_voice_task.side_effect = YouGileAPIError('sensitive body')
     tap = cb(draft, 'yg')
     await drafts.callback(tap)
     row = (await rows(drafts, VoiceTaskDraft))[0]
@@ -199,10 +200,10 @@ async def test_failed_post_preserves_data_and_key_retry_succeeds(drafts):
     tap.answer.assert_awaited_once_with(YOUGILE_FAILURE)
     drafts.reminders.errors.report.assert_awaited_once()
     drafts.bot.edit_message_reply_markup.assert_not_awaited()
-    drafts.yougile.create_sasha_task.side_effect = None
+    drafts.yougile.create_voice_task.side_effect = None
     await drafts.callback(cb(draft, 'yg'))
     assert not await rows(drafts, VoiceTaskDraft)
-    assert len({c.kwargs['idempotency_key'] for c in drafts.yougile.create_sasha_task.await_args_list}) == 1
+    assert len({c.kwargs['idempotency_key'] for c in drafts.yougile.create_voice_task.await_args_list}) == 1
 
 
 async def test_local_atomic_conversion_delivery_history_and_done(drafts):
@@ -213,7 +214,7 @@ async def test_local_atomic_conversion_delivery_history_and_done(drafts):
     assert row.text == f'{TITLE} до 17 сентября' and row.transcript == draft.transcript
     assert (row.original_voice_chat_id, row.original_voice_message_id) == (42, 7)
     assert not await rows(drafts, VoiceTaskDraft)
-    drafts.yougile.create_sasha_task.assert_not_awaited()
+    drafts.yougile.create_voice_task.assert_not_awaited()
     await drafts.reminders.deliver(42)
     await drafts.reminders.deliver(42, scheduled_date=date(2026, 9, 15))
     await drafts.reminders.deliver(42, scheduled_date=date(2026, 9, 15))
@@ -233,7 +234,7 @@ async def test_delete_with_session_cascades_and_replies_to_voice(drafts):
     assert not await rows(drafts, VoiceReminder)
     kw = drafts.bot.send_message.await_args.kwargs
     assert kw['text'] == FORGOTTEN and kw['reply_parameters'].message_id == 7
-    drafts.yougile.create_sasha_task.assert_not_awaited()
+    drafts.yougile.create_voice_task.assert_not_awaited()
 
 
 @pytest.mark.parametrize('action', ['yg', 'local', 'delete', 'edit'])
@@ -246,7 +247,7 @@ async def test_nonowner_and_stale_callbacks_safe(drafts, action):
     await drafts.callback(tap)
     tap.answer.assert_awaited_once_with(STALE)
     drafts.reminders.errors.report.assert_not_awaited()
-    drafts.yougile.create_sasha_task.assert_not_awaited()
+    drafts.yougile.create_voice_task.assert_not_awaited()
 
 
 @pytest.mark.parametrize('deadline', [date(2027, 1, 19), None])
@@ -293,7 +294,7 @@ async def test_timeout_restart_and_races_physically_delete(drafts, race):
     assert not await rows(drafts, VoiceReminder)
     texts = [c.kwargs['text'] for c in drafts.bot.send_message.await_args_list]
     assert texts.count(TIMEOUT) == 1
-    drafts.yougile.create_sasha_task.assert_not_awaited()
+    drafts.yougile.create_voice_task.assert_not_awaited()
     drafts.reminders.errors.report.assert_not_awaited()
 
 
@@ -347,7 +348,7 @@ async def test_callback_answer_failure_after_post_does_not_restore_draft(drafts)
     assert tap.answer.await_args.args == ('Готово, задача создана в YouGile',)
     assert drafts.reminders.errors.report.await_args.kwargs['operation'] == 'draft_callback_ui'
     await drafts.callback(cb(draft, 'yg'))
-    drafts.yougile.create_sasha_task.assert_awaited_once()
+    drafts.yougile.create_voice_task.assert_awaited_once()
 
 
 async def test_telegram_failure_during_edit_keeps_previous_draft(drafts):
@@ -366,6 +367,7 @@ async def test_telegram_failure_during_edit_keeps_previous_draft(drafts):
 async def test_real_resolver_configuration_errors_hit_reporter(drafts, case):
     from test_yougile_task_creation import API, client
     api = API(existing=False)
+    api.projects[0]["title"] = drafts.expected_project
     if case == 'missing-project':
         api.projects = []
     elif case == 'double-project':
@@ -401,3 +403,54 @@ async def test_valid_input_wins_cleanup_race_before_expiration(drafts):
     assert row.id == draft.id and row.deadline_date == date(2004,1,19)
     assert not await rows(drafts, VoiceTaskDraftSession)
     drafts.reminders.errors.report.assert_not_awaited()
+
+
+@pytest.mark.parametrize('actor', ['SASHA', 'VLAD'])
+@pytest.mark.parametrize('action', ['yg', 'local', 'edit', 'delete'])
+async def test_two_enabled_owners_cannot_act_on_each_others_drafts(service, actor, action):
+    identity = PersonalIdentity(service.session_factory, {UID: '@sasha_test', 'vlad-yg': '@vlad_test'},
+                                voice_task_employees={'SASHA': '@sasha_test', 'VLAD': '@vlad_test'})
+    service.openai.extract_yougile_task = AsyncMock(return_value=YouGileTaskExtraction(title=TITLE, deadline=DEADLINE))
+    yg = NS(create_voice_task=AsyncMock(return_value='task-id'))
+    shared = VoiceTaskDraftService(service, identity, yg)
+    ids = {'SASHA': 42, 'VLAD': 44}
+    messages = {}
+    owned = {}
+    for role, user_id in ids.items():
+        msg = message(user=user_id)
+        msg.from_user.username = {'SASHA': 'sasha_test', 'VLAD': 'vlad_test'}[role]
+        await identity.resolve(user_id, msg.from_user.username, action='start')
+        owned[role] = await shared.create_from_voice(msg)
+        messages[role] = msg
+    other = 'VLAD' if actor == 'SASHA' else 'SASHA'
+    tap = cb(owned[other], action, user=ids[actor])
+    tap.from_user.username = 'recycled_or_changed'
+    await shared.callback(tap)
+    tap.answer.assert_awaited_once_with(STALE)
+    assert len(await rows(shared, VoiceTaskDraft)) == 2
+    assert not await rows(shared, VoiceTaskDraftSession)
+    yg.create_voice_task.assert_not_awaited()
+    # Destination cannot be injected, even for one's own draft.
+    forged = cb(owned[actor], 'yg', user=ids[actor])
+    forged.data += ':ONLY Влад' if actor == 'SASHA' else ':ONLY Саша'
+    await shared.callback(forged)
+    forged.answer.assert_awaited_once_with(STALE)
+    yg.create_voice_task.assert_not_awaited()
+    # Bound numeric identity wins over current username; server supplies the project.
+    await shared.callback(cb(owned[actor], 'yg', user=ids[actor]))
+    assert yg.create_voice_task.await_args.kwargs['project_title'] == {'SASHA': 'ONLY Саша', 'VLAD': 'ONLY Влад'}[actor]
+    assert {d.id for d in await rows(shared, VoiceTaskDraft)} == {owned[other].id}
+    service.errors.report.assert_not_awaited()
+
+
+async def test_configured_roles_fail_closed_on_collisions_or_unknown_roles(service):
+    from app.config import VOICE_TASK_PROJECTS
+    assert settings(sasha_tg='@sasha_test', vlad_tg='@vlad_test').voice_task_employees == {
+        'SASHA': '@sasha_test', 'VLAD': '@vlad_test'}
+    assert VOICE_TASK_PROJECTS == {'SASHA': 'ONLY Саша', 'VLAD': 'ONLY Влад'}
+    identity = PersonalIdentity(service.session_factory, {UID: '@same_user'},
+        voice_task_employees={'SASHA': '@same_user', 'VLAD': '@same_user'})
+    assert await identity.voice_task_project(42, 'same_user') is None
+    identity = PersonalIdentity(service.session_factory, {UID: '@same_user'},
+        voice_task_employees={'OTHER': '@same_user'})
+    assert await identity.voice_task_project(42, 'same_user') is None

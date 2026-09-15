@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.config import TELEGRAM_USERNAME_RE
+from app.config import TELEGRAM_USERNAME_RE, VOICE_TASK_PROJECTS
 from app.db import SessionFactory
 from app.models import PersonalDigestSubscription
 
@@ -16,16 +16,24 @@ STOP = "Хорошо, не буду присылать никакие уведо
 
 class PersonalIdentity:
     def __init__(self, session_factory: SessionFactory, mappings: dict[str, str],
-                 *, sasha_tg: str | None = None) -> None:
+                 *, voice_task_employees: dict[str, str] | None = None) -> None:
         self.session_factory = session_factory
         self.mappings = mappings
-        self.sasha_user_id = self.lookup(sasha_tg) if sasha_tg else None
+        candidates: dict[str, set[str]] = {}
+        for employee, username in (voice_task_employees or {}).items():
+            project = VOICE_TASK_PROJECTS.get(employee)
+            uid = self.lookup(username)
+            if project and uid:
+                candidates.setdefault(uid, set()).add(project)
+        # Conflicting employee aliases must not select an arbitrary destination.
+        self.voice_task_projects = {uid: next(iter(projects)) for uid, projects in candidates.items()
+                                    if len(projects) == 1}
 
-    async def is_sasha(self, telegram_id: int, username: str | None) -> bool:
-        if self.sasha_user_id is None:
-            return False
+    async def voice_task_project(self, telegram_id: int, username: str | None) -> str | None:
+        if not self.voice_task_projects:
+            return None
         uid, _ = await self.resolve(telegram_id, username)
-        return uid == self.sasha_user_id
+        return self.voice_task_projects.get(uid)
 
     def lookup(self, username: str | None) -> str | None:
         normalized = "@" + (username or "").removeprefix("@")

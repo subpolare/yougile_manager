@@ -1,4 +1,4 @@
-"""Sasha's opt-in task drafts. All owner mutations share the reminder MySQL lock."""
+"""Opt-in task drafts. All owner mutations share the reminder MySQL lock."""
 from __future__ import annotations
 
 import re
@@ -58,7 +58,10 @@ class VoiceTaskDraftService:
         self.transaction = reminders.transaction
 
     async def eligible(self, user):
-        return await self.identity.is_sasha(user.id, getattr(user, "username", None))
+        return await self.destination(user) is not None
+
+    async def destination(self, user):
+        return await self.identity.voice_task_project(user.id, getattr(user, "username", None))
 
     async def report(self, exc, operation, user_id):
         await self.reminders.errors.report(exc, component="voice_task_drafts",
@@ -101,7 +104,7 @@ class VoiceTaskDraftService:
 
     async def begin_input(self, session, draft, mode):
         await self.close_input(session, draft.telegram_user_id, preserve_draft_id=draft.id)
-        # Share the one-text-input invariant with Sasha's pre-existing local reminders.
+        # Share the one-text-input invariant with the owner's existing local reminders.
         old = await session.get(ReminderEditSession, draft.telegram_user_id)
         if old:
             await self.reminders.remove_keyboard(old.prompt_chat_id, old.prompt_message_id)
@@ -185,8 +188,11 @@ class VoiceTaskDraftService:
         msg = callback.message
         user_id = callback.from_user.id
         if (prefix != "vd" or action not in {"yg", "local", "edit", "delete"}
-                or msg is None or msg.chat.type != "private" or msg.chat.id != user_id
-                or not await self.eligible(callback.from_user)):
+                or msg is None or msg.chat.type != "private" or msg.chat.id != user_id):
+            await callback.answer(STALE)
+            return
+        project_title = await self.destination(callback.from_user)
+        if project_title is None:
             await callback.answer(STALE)
             return
         expired = None
@@ -208,7 +214,7 @@ class VoiceTaskDraftService:
                 if action == "yg":
                     # Keep owner/row locks until successful POST and DB commit.
                     # Persistent random key survives rollback, restart and lost HTTP response.
-                    await self.yougile.create_sasha_task(title=draft.title,
+                    await self.yougile.create_voice_task(project_title=project_title, title=draft.title,
                         deadline=draft.deadline_date, idempotency_key=draft.idempotency_key)
                 elif action == "local":
                     now = utcnow()

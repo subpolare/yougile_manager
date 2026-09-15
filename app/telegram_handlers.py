@@ -4,7 +4,7 @@ import html
 import logging
 
 from aiogram import Bot, Router
-from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.filters.command import CommandObject
@@ -104,9 +104,6 @@ def create_router(
         if not _is_group(message):
             await message.answer("Эта команда работает только в групповых чатах.")
             return
-        if not await (_is_admin(message, bot, error_reporter) if error_reporter else _is_admin(message, bot)):
-            await message.answer("Только администратор или владелец чата может использовать /init.")
-            return
 
         argument = (command.args or "").strip()
         if not argument:
@@ -194,7 +191,7 @@ def create_router(
             return
         if binding is None:
             await message.answer(
-                "Этот чат пока не связан с проектом. Попросите администратора использовать /init."
+                "Этот чат пока не связан с проектом. Используйте /init для привязки проекта."
             )
             return
         await message.answer(
@@ -230,7 +227,7 @@ def create_router(
                 return
             if binding is None:
                 await message.answer(
-                    "Этот чат не инициализирован. Попросите администратора использовать /init."
+                    "Этот чат не инициализирован. Используйте /init для привязки проекта."
                 )
                 return
 
@@ -283,20 +280,3 @@ def create_router(
 
 def _is_group(message: Message) -> bool:
     return message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
-
-
-async def _is_admin(message: Message, bot: Bot, error_reporter=None) -> bool:
-    if message.from_user is None:
-        return False
-    try:
-        member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-    except TelegramAPIError as exc:
-        if error_reporter is not None:
-            await error_reporter.report(exc, component="telegram", operation="check_group_admin")
-        logger.warning(
-            "Telegram admin check failed chat_id=%s error=%s",
-            message.chat.id,
-            type(exc).__name__,
-        )
-        return False
-    return member.status in {ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR}

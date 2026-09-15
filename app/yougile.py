@@ -213,7 +213,7 @@ class YouGileClient:
             timeout=httpx.Timeout(20.0),
         )
         self._rate_limiter = rate_limiter or AsyncWindowRateLimiter()
-        self._sasha_destination_lock = asyncio.Lock()
+        self._voice_destination_lock = asyncio.Lock()
 
     async def __aenter__(self) -> YouGileClient:
         return self
@@ -310,17 +310,17 @@ class YouGileClient:
         rows = await self._paginate("/projects", params={"includeDeleted": False})
         return [_parse_project(row) for row in rows]
 
-    async def resolve_sasha_column(self) -> str:
+    async def resolve_voice_task_column(self, project_title: str) -> str:
         """Exact active hierarchy only. Server idempotency also covers other processes.
 
         API authority: https://yougile.com/api-json, CreateColumnDto (2026-09-15).
         Re-fetch on every resolution so deleted/moved entities cannot poison a cache.
         """
-        async with self._sasha_destination_lock:
+        async with self._voice_destination_lock:
             projects = [r for r in await self._paginate("/projects", params={"includeDeleted": False})
-                        if self._active(r) and _required_string(r, "title", "project").strip() == "ONLY Саша"]
+                        if self._active(r) and _required_string(r, "title", "project").strip() == project_title]
             if len(projects) != 1:
-                raise YouGileDataError("Expected exactly one active Sasha project")
+                raise YouGileDataError("Expected exactly one active voice task project")
             project_id = _required_string(projects[0], "id", "project")
             boards = [r for r in await self._paginate("/boards", params={"includeDeleted": False})
                       if self._active(r) and r.get("projectId") == project_id]
@@ -333,12 +333,13 @@ class YouGileClient:
 
             columns = await matching_columns()
             if len(columns) > 1:
-                raise YouGileDataError("Multiple exact Sasha columns")
+                raise YouGileDataError("Multiple exact voice task columns")
             if columns:
                 return _required_string(columns[0], "id", "column")
             if len(boards) != 1:
-                raise YouGileDataError("Sasha project has no unambiguous active board")
-            # Same key across restarts, clients and concurrent processes; no employee data.
+                raise YouGileDataError("Voice task project has no unambiguous active board")
+            # Keep the legacy namespace for in-flight column requests from older deployments.
+            # Project ID scopes the key; it is safe for every configured employee.
             key = str(uuid5(NAMESPACE_URL, f"yougile-bot:sasha-column:{project_id}"))
             created = await self._request_json("/columns", {}, method="POST", body={
                 "title": "Задачи из бота", "boardId": next(iter(board_ids)), "idempotencyKey": key,
@@ -346,15 +347,15 @@ class YouGileClient:
             column_id = _required_string(created, "id", "column")
             columns = await matching_columns()
             if len(columns) != 1 or columns[0].get("id") != column_id:
-                raise YouGileDataError("Created Sasha column could not be verified")
+                raise YouGileDataError("Created voice task column could not be verified")
             return column_id
 
     @staticmethod
     def _active(row):
         return not _optional_bool(row, "deleted") and not _optional_bool(row, "archived")
 
-    async def create_sasha_task(self, *, title: str, deadline: date, idempotency_key: str) -> str:
-        column_id = await self.resolve_sasha_column()
+    async def create_voice_task(self, *, project_title: str, title: str, deadline: date, idempotency_key: str) -> str:
+        column_id = await self.resolve_voice_task_column(project_title)
         # Inverse of task_service.deadline_datetime: calendar day in Europe/Moscow.
         deadline_ms = int(datetime.combine(deadline, calendar_time.min,
                                           tzinfo=ZoneInfo("Europe/Moscow")).timestamp() * 1000)

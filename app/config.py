@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 TELEGRAM_USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,32}$")
+VOICE_TASK_PROJECTS = {"SASHA": "ONLY Саша", "VLAD": "ONLY Влад"}
 
 
 def parse_employee_mappings(values: Mapping[str, object]) -> dict[str, str]:
@@ -62,6 +63,7 @@ class Settings(BaseSettings):
     openai_error_model: str = "gpt-5.6-terra"
     error_admin_telegram_user_id: int | None = None
     sasha_tg: str | None = None
+    vlad_tg: str | None = None
     yougile_base_url: str = "https://yougile.com/api-v2"
 
     database_url: SecretStr | None = None
@@ -74,6 +76,11 @@ class Settings(BaseSettings):
     db_connect_retry_seconds: float = 2.0
 
     log_level: str = "INFO"
+
+    @property
+    def voice_task_employees(self) -> dict[str, str]:
+        return {employee: username for employee in VOICE_TASK_PROJECTS
+                if (username := getattr(self, f"{employee.lower()}_tg"))}
 
     @property
     def sqlalchemy_url(self) -> str:

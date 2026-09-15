@@ -19,14 +19,14 @@ pytestmark = pytest.mark.skipif(not os.getenv('REMINDER_MYSQL_TEST_URL'),
                                 reason='Set REMINDER_MYSQL_TEST_URL for isolated MySQL integration tests')
 
 
-def setup(first, second):
+def setup(first, second, employee="SASHA"):
     ai = NS(transcribe_voice=AsyncMock(return_value='Тестовая речь'),
             extract_yougile_task=AsyncMock(return_value=YouGileTaskExtraction(title='Тест', deadline=date(2026, 9, 17))))
-    yg = NS(create_sasha_task=AsyncMock(return_value='task-id'))
+    yg = NS(create_voice_task=AsyncMock(return_value='task-id'))
     services = []
     for reminder in [first, second]:
         reminder.openai = ai
-        identity = PersonalIdentity(reminder.session_factory, {'test-yg': '@test_user'}, sasha_tg='@test_user')
+        identity = PersonalIdentity(reminder.session_factory, {'test-yg': '@test_user'}, voice_task_employees={employee: '@test_user'})
         drafts = VoiceTaskDraftService(reminder, identity, yg)
         reminder.task_drafts = drafts
         services.append(drafts)
@@ -49,13 +49,14 @@ async def clean(drafts, uid):
         await session.execute(delete(VoiceTaskDraft).where(VoiceTaskDraft.telegram_user_id==uid))
 
 
-async def test_mysql_two_engines_double_post_and_physical_cascade(mysql_services):
+@pytest.mark.parametrize("employee", ["SASHA", "VLAD"])
+async def test_mysql_two_engines_double_post_and_physical_cascade(mysql_services, employee):
     first, second, uid, _ = mysql_services
-    a, b = setup(first, second)
+    a, b = setup(first, second, employee)
     try:
         draft = await a.create_from_voice(message(uid))
         await asyncio.gather(a.callback(callback(draft, 'yg')), b.callback(callback(draft, 'yg')))
-        a.yougile.create_sasha_task.assert_awaited_once()
+        a.yougile.create_voice_task.assert_awaited_once()
         async with first.session_factory() as session:
             assert await session.get(VoiceTaskDraft, draft.id) is None
             assert await session.get(VoiceTaskDraftSession, uid) is None
@@ -63,10 +64,11 @@ async def test_mysql_two_engines_double_post_and_physical_cascade(mysql_services
         await clean(a, uid)
 
 
+@pytest.mark.parametrize('employee', ['SASHA', 'VLAD'])
 @pytest.mark.parametrize('action', ['text', 'delete', 'edit'])
-async def test_mysql_restart_expiration_races(mysql_services, action):
+async def test_mysql_restart_expiration_races(mysql_services, action, employee):
     first, second, uid, _ = mysql_services
-    a, b = setup(first, second)
+    a, b = setup(first, second, employee)
     a.openai.extract_yougile_task.return_value = YouGileTaskExtraction(title='Тест',deadline=None)
     try:
         draft = await a.create_from_voice(message(uid))
@@ -79,6 +81,6 @@ async def test_mysql_restart_expiration_races(mysql_services, action):
             assert await session.get(VoiceTaskDraft,draft.id) is None
             assert await session.get(VoiceTaskDraftSession,uid) is None
         assert sum(c.kwargs.get('text') == TIMEOUT for c in a.bot.send_message.await_args_list) == 1
-        a.yougile.create_sasha_task.assert_not_awaited()
+        a.yougile.create_voice_task.assert_not_awaited()
     finally:
         await clean(a, uid)
